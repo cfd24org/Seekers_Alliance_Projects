@@ -19,7 +19,35 @@ import urllib.parse
 import requests
 import argparse
 import os
+import sys
+import builtins
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+
+# Prevent BlockingIOError when many async tasks write to stdout: make stdout blocking
+try:
+    os.set_blocking(sys.stdout.fileno(), True)
+except Exception:
+    # set_blocking may not be available on all platforms/Python versions
+    pass
+
+# Override built-in print with a safe wrapper that catches BlockingIOError and
+# falls back to appending messages to a log file. This avoids changing every
+# print call throughout the script.
+_original_print = builtins.print
+
+def _safe_print(*args, **kwargs):
+    try:
+        _original_print(*args, **kwargs)
+    except BlockingIOError:
+        try:
+            with open('bbbest_stdout.log', 'a', encoding='utf-8') as f:
+                end = kwargs.get('end', '\n')
+                f.write(' '.join(str(a) for a in args) + end)
+        except Exception:
+            # As a last resort, ignore the error to avoid crashing the scraper
+            pass
+
+builtins.print = _safe_print
 
 # Support multiple games (list of Steam app ids)
 # NOTE: user sometimes pastes a single string with commas. We accept both formats.
