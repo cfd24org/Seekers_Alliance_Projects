@@ -43,6 +43,70 @@ with st.form(key="scrape_form"):
 log_area = st.empty()
 progress_text = st.empty()
 
+# --- New standalone filler feature ---
+st.markdown("---")
+st.header("Fill missing About/Email — standalone")
+with st.form(key="standalone_filler_form"):
+    filler_upload = st.file_uploader("CSV to fill (optional)", type=["csv"], key="filler_upload")
+    filler_existing_path = st.text_input("Or existing CSV path (repo-relative)", value="dice.csv")
+    filler_concurrency = st.slider("Filler concurrency", min_value=1, max_value=6, value=1)
+    filler_no_headless = st.checkbox("Show browser while filling (no-headless)", value=False)
+    run_filler_now = st.form_submit_button("Run filler now")
+
+if run_filler_now:
+    tmpdir_f = Path(tempfile.mkdtemp(prefix="steam_filler_"))
+    input_csv_path = None
+    # prefer uploaded file
+    if filler_upload is not None:
+        input_csv_path = tmpdir_f / f"uploaded_input_{int(time.time())}.csv"
+        with open(input_csv_path, "wb") as f:
+            f.write(filler_upload.getbuffer())
+    else:
+        candidate_path = Path(filler_existing_path)
+        if not candidate_path.is_absolute():
+            candidate_path = Path.cwd() / candidate_path
+        if candidate_path.exists():
+            input_csv_path = candidate_path
+        else:
+            st.error(f"CSV not found: {candidate_path}")
+
+    if input_csv_path:
+        out_path = Path(str(input_csv_path).rsplit('.', 1)[0] + '_filled.csv')
+        cmd_fill = ["python", "fill_about_missing.py", "--input", str(input_csv_path), "--output", str(out_path), "--concurrency", str(max(1, filler_concurrency))]
+        if filler_no_headless:
+            cmd_fill.append("--no-headless")
+
+        st.info("Running filler: " + " ".join(cmd_fill))
+        filler_log = st.empty()
+        filler_progress = st.empty()
+        log_lines = []
+        proc = subprocess.Popen(cmd_fill, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        try:
+            while True:
+                line = proc.stdout.readline()
+                if line == '' and proc.poll() is not None:
+                    break
+                if line:
+                    for sub in line.splitlines():
+                        log_lines.append(sub)
+                        if len(log_lines) > 2000:
+                            log_lines = log_lines[-2000:]
+                    filler_log.markdown("```text\n" + "\n".join(log_lines) + "\n```")
+                    filler_progress.text(log_lines[-1] if log_lines else "")
+            proc.wait()
+        except Exception as e:
+            st.error(f"Error while running filler: {e}")
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+
+        if out_path.exists():
+            st.success(f"Filler finished — output: {out_path}")
+            with open(out_path, 'rb') as fh:
+                st.download_button('Download filled CSV', fh.read(), file_name=out_path.name, mime='text/csv')
+        else:
+            st.warning('Filler did not produce an output file. Check logs above for details.')
+
 if run_btn:
     # prepare temp directory for inputs and outputs
     tmpdir = Path(tempfile.mkdtemp(prefix="steam_scraper_"))
@@ -146,6 +210,50 @@ if run_btn:
             with open(candidate, "rb") as f:
                 data = f.read()
             st.download_button("Download CSV", data, file_name=candidate.name, mime="text/csv")
+
+            # New: Add a convenience button to run the filler on this CSV and produce a *_filled.csv
+            st.markdown("---")
+            st.write("Need to fill missing 'about_me' or missing emails? Use the filler tool:")
+            show_browser_for_filler = st.checkbox("Show browser while filling (no-headless)", value=False)
+            run_filler = st.button("Fill missing about/email for this CSV")
+
+            if run_filler:
+                filled_path = candidate.with_name(candidate.stem + '_filled.csv')
+                cmd_fill = ["python", "fill_about_missing.py", "--input", str(candidate), "--output", str(filled_path), "--concurrency", str(max(1, concurrency))]
+                if show_browser_for_filler:
+                    cmd_fill.append("--no-headless")
+
+                st.info("Running filler: " + " ".join(cmd_fill))
+                # small log area for the filler
+                filler_log = st.empty()
+                filler_progress = st.empty()
+                log_lines = []
+                proc = subprocess.Popen(cmd_fill, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+                try:
+                    while True:
+                        line = proc.stdout.readline()
+                        if line == '' and proc.poll() is not None:
+                            break
+                        if line:
+                            for sub in line.splitlines():
+                                log_lines.append(sub)
+                                if len(log_lines) > 2000:
+                                    log_lines = log_lines[-2000:]
+                            filler_log.markdown("```text\n" + "\n".join(log_lines) + "\n```")
+                            filler_progress.text(log_lines[-1] if log_lines else "")
+                    proc.wait()
+                except Exception as e:
+                    st.error(f"Error while running filler: {e}")
+                finally:
+                    if proc.poll() is None:
+                        proc.terminate()
+
+                if filled_path.exists():
+                    st.success(f"Filler finished — output: {filled_path.name}")
+                    with open(filled_path, 'rb') as fh:
+                        st.download_button('Download filled CSV', fh.read(), file_name=filled_path.name, mime='text/csv')
+                else:
+                    st.warning('Filler did not produce an output file. Check logs above for details.')
         else:
             st.warning("No output CSV found — check logs.")
 

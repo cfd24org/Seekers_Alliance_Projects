@@ -21,6 +21,8 @@ import argparse
 import os
 import sys
 import builtins
+import json
+import time
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 
 # Prevent BlockingIOError when many async tasks write to stdout: make stdout blocking
@@ -284,71 +286,173 @@ async def process_curator(curator, page_pool, appid=None, app_name=None, listing
                     sample_review = sample_review or ""
 
                 # About page (may contain an email and about text)
-                about_link_el = await page2.query_selector("a.about")
-                if about_link_el:
-                    about_url = await about_link_el.get_attribute("href")
-                    if about_url:
-                        for attempt in range(NAV_RETRIES + 2):  # Increase retries
-                            try:
-                                await page2.goto(about_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
-                                break
-                            except PlaywrightTimeoutError:
-                                if attempt < NAV_RETRIES + 1:
-                                    await asyncio.sleep(NAV_RETRY_SLEEP)
-                                else:
-                                    print(f"[{name}] Timeout navigating to About page after {NAV_RETRIES + 2} attempts")
+                try:
+                    about_link_el = await page2.query_selector("a.about")
+                    if about_link_el:
+                        about_url = await about_link_el.get_attribute("href")
+                        navigated = False
 
-                        desc_el = await page2.query_selector(
-                            "div.about_container div.desc p.tagline, div.about_container div.desc"
-                        )
-                        if desc_el:
-                            text = await desc_el.inner_text()
-                            about_me = (text or "").strip()
+                        # Prefer navigation when href looks like a real URL, otherwise try click
+                        if about_url and (about_url.startswith('http') or about_url.startswith('/')):
+                            for attempt in range(NAV_RETRIES + 2):
+                                try:
+                                    await page2.goto(about_url, timeout=NAV_TIMEOUT_MS, wait_until='networkidle')
+                                    navigated = True
+                                    break
+                                except PlaywrightTimeoutError:
+                                    if attempt < NAV_RETRIES + 1:
+                                        await asyncio.sleep(NAV_RETRY_SLEEP)
+                                    else:
+                                        print(f"[{name}] Timeout navigating to About page after {NAV_RETRIES + 2} attempts")
+                        else:
+                            try:
+                                await about_link_el.click()
+                                try:
+                                    await page2.wait_for_load_state('networkidle', timeout=10000)
+                                except Exception:
+                                    pass
+                                navigated = True
+                            except Exception:
+                                pass
+
+                        # Wait a bit longer for dynamic content to render
+                        try:
+                            await page2.wait_for_selector("div.about_container div.desc, div.desc, div.profile_about", timeout=10000)
+                        except Exception:
+                            pass
+
+                        # Try a set of concrete selectors (prefer the tagline inside about_container)
+                        about_text = ""
+                        for sel in (
+                            "div.about_container div.desc p.tagline",
+                            "div.about_container div.desc",
+                            "div.desc p",
+                            "div.desc",
+                            "div.profile_about",
+                            "div.curator_about",
+                        ):
+                            try:
+                                el = await page2.query_selector(sel)
+                                if el:
+                                    # If element has multiple <p> children, join them (preserves paragraphs)
+                                    try:
+                                        pchildren = await el.query_selector_all('p')
+                                        if pchildren:
+                                            parts = []
+                                            for p in pchildren:
+                                                try:
+                                                    t = (await p.inner_text()) or ''
+                                                    t = t.strip()
+                                                    if t:
+                                                        parts.append(t)
+                                                except Exception:
+                                                    continue
+                                            txt = ' '.join(parts).strip()
+                                        else:
+                                            txt = (await el.inner_text()) or ''
+                                    except Exception:
+                                        txt = (await el.inner_text()) or ''
+
+                                    txt = (txt or '').strip()
+                                    if txt:
+                                        about_text = txt
+                                        break
+                            except Exception:
+                                continue
+
+                        # Fallback: meta description / og:description
+                        if not about_text:
+                            try:
+                                meta = await page2.query_selector('meta[name="description"], meta[property="og:description"]')
+                                if meta:
+                                    about_text = (await meta.get_attribute('content') or '').strip()
+                            except Exception:
+                                pass
+
+                        # Fallback: JSON-LD description
+                        if not about_text:
+                            try:
+                                scripts = await page2.query_selector_all('script[type="application/ld+json"]')
+                                for s in scripts:
+                                    try:
+                                        raw = (await s.inner_text()) or ''
+                                        obj = json.loads(raw)
+                                        desc = None
+                                        if isinstance(obj, dict):
+                                            desc = obj.get('description') or obj.get('about')
+                                        elif isinstance(obj, list):
+                                            for item in obj:
+                                                if isinstance(item, dict) and item.get('description'):
+                                                    desc = item.get('description')
+                                                    break
+                                        if desc:
+                                            about_text = str(desc).strip()
+                                            break
+                                    except Exception:
+                                        continue
+                            except Exception:
+                                pass
+
+                        # Last-resort heuristic: pick the first long body paragraph before FOLLOWERS/REVIEWS block
+                        if not about_text:
+                            try:
+                                body = (await page2.inner_text('body') or '').strip()
+                                # split on follower/reviews markers and prefer text before them
+                                parts = re.split(r"\n?\s*[\d,]+\s*(?:CURATOR|CREATOR)?\s*FOLLOWERS\b", body, flags=re.I)
+                                candidate = parts[0] if parts else body
+                                # If the candidate is too short, search for first long paragraph
+                                if len(candidate) > 40:
+                                    about_text = candidate
+                                else:
+                                    for line in body.splitlines():
+                                        t = line.strip()
+                                        if len(t) > 40 and not re.search(r'FOLLOWERS|REVIEWS|POSTED', t, flags=re.I):
+                                            about_text = t
+                                            break
+                            except Exception:
+                                pass
+
+                        # If still empty, write a small HTML snapshot to debug folder for manual inspection
+                        if not about_text:
+                            try:
+                                os.makedirs('debug_about_missing', exist_ok=True)
+                                safe_name = re.sub(r'[^A-Za-z0-9_-]', '_', name)[:50] or 'unknown'
+                                snap = f"debug_about_missing/{safe_name}_{int(time.time())}.html"
+                                html = await page2.content()
+                                with open(snap, 'w', encoding='utf-8') as fh:
+                                    fh.write(html[:200000])
+                                print(f"[DEBUG] About missing - saved snapshot: {snap}")
+                            except Exception:
+                                pass
+
+                        # Normalise and clamp
+                        if about_text:
+                            about_text = about_text.strip(' \t\n\r"\'“”')
+                            about_text = re.sub(r'\s{2,}', ' ', about_text)
+                            about_me = about_text[:800]
                             print(f"[DEBUG] Extracted 'about_me' from About page: {about_me}")
 
-                        # Additional fallback: extract from main profile page if About fails
-                        if not about_me:
+                        # Try to extract an email on the About page if we don't already have one
+                        if not email_found:
                             try:
-                                body_text = (await page2.inner_text('body') or "").strip()
-                                about_me = body_text[:500]  # Limit to 500 chars
-                                print(f"[DEBUG] Fallback 'about_me' extracted from body: {about_me}")
-                            except Exception as e:
-                                print(f"[DEBUG] Failed to extract 'about_me' from body: {e}")
+                                mail_el = await page2.query_selector("a[href^='mailto:']")
+                                if mail_el:
+                                    href = await mail_el.get_attribute('href') or ''
+                                    m = re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", href)
+                                    if m:
+                                        email_found = m.group(0)
+                                        print(f"[DEBUG] Extracted email from About page: {email_found}")
+                            except Exception:
+                                pass
 
-                        # Enhanced fallback logic for 'About Me' extraction
-                        if not about_me:
-                            try:
-                                # Additional wait for dynamic content
-                                await asyncio.sleep(2)  # Wait for 2 seconds to allow dynamic content to load
-
-                                # Attempt alternative selectors for 'About Me'
-                                for selector in [
-                                    "div.profile_about p",
-                                    "div.profile_about",
-                                    "div.curator_about",
-                                    "div.curator_description",
-                                    "body"
-                                ]:
-                                    try:
-                                        about_me_elem = await page2.query_selector(selector)
-                                        about_me = (await about_me_elem.inner_text()).strip() if about_me_elem else about_me
-                                        if about_me:
-                                            print(f"[DEBUG] Extracted 'about_me' using selector '{selector}': {about_me}")
-                                            break
-                                    except Exception as e:
-                                        print(f"[DEBUG] Failed to extract 'about_me' using selector '{selector}': {e}")
-
-                            except Exception as e:
-                                print(f"[DEBUG] Failed to extract 'about_me' using enhanced fallback: {e}")
-
-                            # Remove 'followers' and 'reviews posted' from 'about_me'
-                            if about_me:
-                                # Clean the 'about_me' field to remove unwanted text
-                                about_me = re.sub(r"\n?\s*[\d,]+\s*(?:CURATOR|CREATOR)?\s*FOLLOWERS\b.*", "", about_me, flags=re.I)
-                                about_me = re.sub(r"\n?\s*[\d,]+\s*(?:REVIEWS|REVIEWS POSTED|POSTED)\b.*", "", about_me, flags=re.I)
-                                about_me = re.sub(r"\bPOSTED\b", "", about_me, flags=re.I)
-                                about_me = re.sub(r"\s+", " ", about_me).strip()
-                                print(f"[DEBUG] Cleaned 'about_me': {about_me}")
+                        # Clean the 'about_me' field to remove unwanted follower/reviews noise
+                        if about_me:
+                            about_me = re.sub(r"\n?\s*[\d,]+\s*(?:CURATOR|CREATOR)?\s*FOLLOWERS\b.*", "", about_me, flags=re.I)
+                            about_me = re.sub(r"\n?\s*[\d,]+\s*(?:REVIEWS|REVIEWS POSTED|POSTED)\b.*", "", about_me, flags=re.I)
+                            about_me = re.sub(r"\bPOSTED\b", "", about_me, flags=re.I)
+                            about_me = re.sub(r"\s+", " ", about_me).strip()
+                except Exception:
+                    pass
 
                 # If we still don't have a reviews_count, try scanning the page body for a reviews badge
                 if not reviews_count:
@@ -698,33 +802,154 @@ async def main():
                     about_link_el = await page2.query_selector("a.about")
                     if about_link_el:
                         about_url = await about_link_el.get_attribute("href")
-                        if about_url:
-                            for attempt in range(NAV_RETRIES + 2):  # Increase retries
+                        navigated = False
+
+                        if about_url and (about_url.startswith('http') or about_url.startswith('/')):
+                            for attempt in range(NAV_RETRIES + 2):
                                 try:
-                                    await page2.goto(about_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+                                    await page2.goto(about_url, timeout=NAV_TIMEOUT_MS, wait_until='networkidle')
+                                    navigated = True
                                     break
                                 except PlaywrightTimeoutError:
                                     if attempt < NAV_RETRIES + 1:
                                         await asyncio.sleep(NAV_RETRY_SLEEP)
                                     else:
                                         print(f"[{name}] Timeout navigating to About page after {NAV_RETRIES + 2} attempts")
+                        else:
+                            try:
+                                await about_link_el.click()
+                                try:
+                                    await page2.wait_for_load_state('networkidle', timeout=10000)
+                                except Exception:
+                                    pass
+                                navigated = True
+                            except Exception:
+                                pass
 
-                            desc_el = await page2.query_selector(
-                                "div.about_container div.desc p.tagline, div.about_container div.desc"
-                            )
-                            if desc_el:
-                                text = await desc_el.inner_text()
-                                about_me = (text or "").strip()
-                                print(f"[DEBUG] Extracted 'about_me' from About page: {about_me}")
+                        try:
+                            await page2.wait_for_selector("div.about_container div.desc, div.desc, div.profile_about", timeout=10000)
+                        except Exception:
+                            pass
 
-                                # Additional fallback: extract from main profile page if About fails
-                                if not about_me:
+                        about_text = ""
+                        for sel in (
+                            "div.about_container div.desc p.tagline",
+                            "div.about_container div.desc",
+                            "div.desc p",
+                            "div.desc",
+                            "div.profile_about",
+                            "div.curator_about",
+                        ):
+                            try:
+                                el = await page2.query_selector(sel)
+                                if el:
                                     try:
-                                        body_text = (await page2.inner_text('body') or "").strip()
-                                        about_me = body_text[:500]  # Limit to 500 chars
-                                        print(f"[DEBUG] Fallback 'about_me' extracted: {about_me}")
-                                    except Exception as e:
-                                        print(f"[DEBUG] Failed to extract 'about_me' from body: {e}")
+                                        pchildren = await el.query_selector_all('p')
+                                        if pchildren:
+                                            parts = []
+                                            for p in pchildren:
+                                                try:
+                                                    t = (await p.inner_text()) or ''
+                                                    t = t.strip()
+                                                    if t:
+                                                        parts.append(t)
+                                                except Exception:
+                                                    continue
+                                            txt = ' '.join(parts).strip()
+                                        else:
+                                            txt = (await el.inner_text()) or ''
+                                    except Exception:
+                                        txt = (await el.inner_text()) or ''
+
+                                    txt = (txt or '').strip()
+                                    if txt:
+                                        about_text = txt
+                                        break
+                            except Exception:
+                                continue
+
+                        if not about_text:
+                            try:
+                                meta = await page2.query_selector('meta[name="description"], meta[property="og:description"]')
+                                if meta:
+                                    about_text = (await meta.get_attribute('content') or '').strip()
+                            except Exception:
+                                pass
+
+                        if not about_text:
+                            try:
+                                scripts = await page2.query_selector_all('script[type="application/ld+json"]')
+                                for s in scripts:
+                                    try:
+                                        raw = (await s.inner_text()) or ''
+                                        obj = json.loads(raw)
+                                        desc = None
+                                        if isinstance(obj, dict):
+                                            desc = obj.get('description') or obj.get('about')
+                                        elif isinstance(obj, list):
+                                            for item in obj:
+                                                if isinstance(item, dict) and item.get('description'):
+                                                    desc = item.get('description')
+                                                    break
+                                        if desc:
+                                            about_text = str(desc).strip()
+                                            break
+                                    except Exception:
+                                        continue
+                            except Exception:
+                                pass
+
+                        if not about_text:
+                            try:
+                                body = (await page2.inner_text('body') or '').strip()
+                                parts = re.split(r"\n?\s*[\d,]+\s*(?:CURATOR|CREATOR)?\s*FOLLOWERS\b", body, flags=re.I)
+                                candidate = parts[0] if parts else body
+                                if len(candidate) > 40:
+                                    about_text = candidate
+                                else:
+                                    for line in body.splitlines():
+                                        t = line.strip()
+                                        if len(t) > 40 and not re.search(r'FOLLOWERS|REVIEWS|POSTED', t, flags=re.I):
+                                            about_text = t
+                                            break
+                            except Exception:
+                                pass
+
+                        if not about_text:
+                            try:
+                                os.makedirs('debug_about_missing', exist_ok=True)
+                                safe_name = re.sub(r'[^A-Za-z0-9_-]', '_', name)[:50] or 'unknown'
+                                snap = f"debug_about_missing/{safe_name}_{int(time.time())}.html"
+                                html = await page2.content()
+                                with open(snap, 'w', encoding='utf-8') as fh:
+                                    fh.write(html[:200000])
+                                print(f"[DEBUG] About missing - saved snapshot: {snap}")
+                            except Exception:
+                                pass
+
+                        if about_text:
+                            about_text = about_text.strip(' \t\n\r"\'“”')
+                            about_text = re.sub(r'\s{2,}', ' ', about_text)
+                            about_me = about_text[:800]
+                            print(f"[DEBUG] Extracted 'about_me' from About page: {about_me}")
+
+                        if not email_found:
+                            try:
+                                mail_el = await page2.query_selector("a[href^='mailto:']")
+                                if mail_el:
+                                    href = await mail_el.get_attribute('href') or ''
+                                    m = re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", href)
+                                    if m:
+                                        email_found = m.group(0)
+                                        print(f"[DEBUG] Extracted email from About page: {email_found}")
+                            except Exception:
+                                pass
+
+                        if about_me:
+                            about_me = re.sub(r"\n?\s*[\d,]+\s*(?:CURATOR|CREATOR)?\s*FOLLOWERS\b.*", "", about_me, flags=re.I)
+                            about_me = re.sub(r"\n?\s*[\d,]+\s*(?:REVIEWS|REVIEWS POSTED|POSTED)\b.*", "", about_me, flags=re.I)
+                            about_me = re.sub(r"\bPOSTED\b", "", about_me, flags=re.I)
+                            about_me = re.sub(r"\s+", " ", about_me).strip()
                 except Exception:
                     pass
 
@@ -950,6 +1175,15 @@ async def main():
             row["about_me"] = about_me
 
             final_rows.append(row)
+
+        # Ensure there are no empty about_me cells (replace with explicit error marker)
+        empty_about = 0
+        for r in final_rows:
+            if not (r.get('about_me') or '').strip():
+                r['about_me'] = "[ERROR: Unable to extract 'about me' section]"
+                empty_about += 1
+        if empty_about:
+            print(f"[DEBUG] Replaced {empty_about} empty 'about_me' entries with error marker")
 
         # If user requested only newly discovered curators and an input CSV was provided,
         # filter the rows accordingly.
