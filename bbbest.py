@@ -20,6 +20,78 @@ import requests
 import argparse
 import os
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
+import sys
+import logging
+from logging.handlers import RotatingFileHandler
+
+# Setup a robust rotating-file logger and redirect stdout/stderr to it to avoid BlockingIOError
+try:
+    import logging
+    import logging.handlers
+    import threading
+
+    _log_path = os.path.join(os.path.dirname(__file__), 'bbbest_stdout.log')
+
+    logger = logging.getLogger('bbbest')
+    logger.setLevel(logging.DEBUG)
+
+    # Add a RotatingFileHandler if not already present (safe for module reloads)
+    if not any(getattr(h, 'baseFilename', None) == _log_path for h in getattr(logger, 'handlers', [])):
+        handler = logging.handlers.RotatingFileHandler(_log_path, maxBytes=5 * 1024 * 1024, backupCount=5, encoding='utf-8')
+        handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s: %(message)s'))
+        logger.addHandler(handler)
+
+    class LoggerWriter:
+        """A minimal TextIO-like object that writes lines into the logger.
+
+        This buffers partial lines and only emits to the RotatingFileHandler when a newline
+        is seen (or on flush). Using the logger avoids blocking writes to a full pipe.
+        """
+        def __init__(self, logger, level=logging.INFO):
+            self.logger = logger
+            self.level = level
+            self._buffer = ''
+            self._lock = threading.Lock()
+
+        def write(self, message):
+            if not message:
+                return
+            try:
+                s = str(message)
+            except Exception:
+                # Best-effort string conversion
+                try:
+                    s = message.decode('utf-8', errors='ignore')
+                except Exception:
+                    s = repr(message)
+            with self._lock:
+                self._buffer += s
+                while '\n' in self._buffer:
+                    line, self._buffer = self._buffer.split('\n', 1)
+                    if line:
+                        try:
+                            self.logger.log(self.level, line)
+                        except Exception:
+                            # Never raise from logging
+                            pass
+
+        def flush(self):
+            with self._lock:
+                if self._buffer:
+                    try:
+                        self.logger.log(self.level, self._buffer)
+                    except Exception:
+                        pass
+                    self._buffer = ''
+
+    # Replace sys.stdout/stderr with LoggerWriter instances so print() and other writes
+    # don't block if the parent process isn't draining the pipes.
+    sys.stdout = LoggerWriter(logger, logging.INFO)
+    sys.stderr = LoggerWriter(logger, logging.ERROR)
+
+except Exception:
+    # If anything goes wrong (permissions, ENOSPC, missing modules), leave sys.stdout/stderr alone
+    pass
 
 # Support multiple games (list of Steam app ids)
 # NOTE: user sometimes pastes a single string with commas. We accept both formats.
@@ -43,6 +115,33 @@ DEFAULT_USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/120.0.0.0 Safari/537.36"
 )
+
+
+async def _save_debug_html(name, page, suffix: str = ""):
+    """Save the current page HTML to a debug file for offline inspection.
+
+    This is safe-best-effort and will never raise.
+    """
+    try:
+        safe = re.sub(r'[^A-Za-z0-9_.-]', '_', (name or 'unknown'))[:80]
+        debug_dir = os.path.join(os.path.dirname(__file__), 'debug')
+        try:
+            os.makedirs(debug_dir, exist_ok=True)
+        except Exception:
+            # ignore failures to create dir
+            debug_dir = os.path.dirname(__file__)
+        fname = os.path.join(debug_dir, f"debug_profile_{safe}{suffix}.html")
+        # attempt to get page content; this is async and may fail if page closed
+        html = await page.content()
+        with open(fname, "w", encoding="utf-8") as fh:
+            fh.write(html)
+        try:
+            logger.debug(f"Saved debug profile HTML to {fname}")
+        except Exception:
+            pass
+    except Exception:
+        # never raise from debug helper
+        pass
 
 
 async def extract_email_from_text(text: str):
@@ -256,27 +355,28 @@ async def process_curator(curator, page_pool, appid=None, app_name=None, listing
                     sample_review = sample_review or ""
 
                 # About page (may contain an email and about text)
-                about_link_el = await page2.query_selector("a.about")
-                if about_link_el:
-                    about_url = await about_link_el.get_attribute("href")
-                    if about_url:
-                        for attempt in range(NAV_RETRIES + 2):  # Increase retries
-                            try:
-                                await page2.goto(about_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
-                                break
-                            except PlaywrightTimeoutError:
-                                if attempt < NAV_RETRIES + 1:
-                                    await asyncio.sleep(NAV_RETRY_SLEEP)
-                                else:
-                                    print(f"[{name}] Timeout navigating to About page after {NAV_RETRIES + 2} attempts")
+                try:
+                    about_link_el = await page2.query_selector("a.about")
+                    if about_link_el:
+                        about_url = await about_link_el.get_attribute("href")
+                        if about_url:
+                            for attempt in range(NAV_RETRIES + 2):  # Increase retries
+                                try:
+                                    await page2.goto(about_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
+                                    break
+                                except PlaywrightTimeoutError:
+                                    if attempt < NAV_RETRIES + 1:
+                                        await asyncio.sleep(NAV_RETRY_SLEEP)
+                                    else:
+                                        print(f"[{name}] Timeout navigating to About page after {NAV_RETRIES + 2} attempts")
 
-                        desc_el = await page2.query_selector(
-                            "div.about_container div.desc p.tagline, div.about_container div.desc"
-                        )
-                        if desc_el:
-                            text = await desc_el.inner_text()
-                            about_me = (text or "").strip()
-                            print(f"[DEBUG] Extracted 'about_me' from About page: {about_me}")
+                            desc_el = await page2.query_selector(
+                                "div.about_container div.desc p.tagline, div.about_container div.desc"
+                            )
+                            if desc_el:
+                                text = await desc_el.inner_text()
+                                about_me = (text or "").strip()
+                                print(f"[DEBUG] Extracted 'about_me' from About page: {about_me}")
 
                         # Additional fallback: extract from main profile page if About fails
                         if not about_me:
@@ -322,6 +422,14 @@ async def process_curator(curator, page_pool, appid=None, app_name=None, listing
                                 about_me = re.sub(r"\s+", " ", about_me).strip()
                                 print(f"[DEBUG] Cleaned 'about_me': {about_me}")
 
+                # Save debug HTML if about_me still empty after fallbacks
+                try:
+                    if not about_me:
+                        await asyncio.sleep(0.5)
+                        await _save_debug_html(name, page2, suffix="_about_missing")
+                except Exception:
+                    pass
+
                 # If we still don't have a reviews_count, try scanning the page body for a reviews badge
                 if not reviews_count:
                     try:
@@ -340,7 +448,17 @@ async def process_curator(curator, page_pool, appid=None, app_name=None, listing
 
             except PlaywrightTimeoutError:
                 print(f"[{name}] Timeout on profile page")
+                try:
+                    # Save HTML on timeout for later inspection
+                    await _save_debug_html(name, page2, suffix="_timeout")
+                except Exception:
+                    pass
             except Exception as e:
+                try:
+                    # Save HTML and full page on unexpected exceptions
+                    await _save_debug_html(name, page2, suffix="_exception")
+                except Exception:
+                    pass
                 print(f"[{name}] Error when visiting profile: {e}")
             finally:
                 try:
@@ -361,6 +479,12 @@ async def process_curator(curator, page_pool, appid=None, app_name=None, listing
         }
 
     except Exception as e:
+        try:
+            # best-effort save of the last seen page if available (process_curator uses page2 variable earlier)
+            # note: page2 may not be defined in this scope; ignore failures
+            await _save_debug_html(name if name else 'N_A', globals().get('page2'), suffix="_proc_error")
+        except Exception:
+            pass
         print(f"[{name if name else 'N/A'}] Error processing profile: {e}")
         return {
             "curator_name": name if name else "N/A",
@@ -697,6 +821,12 @@ async def main():
                                         print(f"[DEBUG] Fallback 'about_me' extracted: {about_me}")
                                     except Exception as e:
                                         print(f"[DEBUG] Failed to extract 'about_me' from body: {e}")
+
+                # Save debug HTML if about_me still empty after fallbacks
+                try:
+                    if not about_me:
+                        await asyncio.sleep(0.5)
+                        await _save_debug_html(name, page2, suffix="_about_missing")
                 except Exception:
                     pass
 
@@ -721,7 +851,15 @@ async def main():
 
             except PlaywrightTimeoutError:
                 print(f"[{name}] Timeout on profile page")
+                try:
+                    await _save_debug_html(name, page2, suffix="_timeout")
+                except Exception:
+                    pass
             except Exception as e:
+                try:
+                    await _save_debug_html(name, page2, suffix="_exception")
+                except Exception:
+                    pass
                 print(f"[{name}] Error when visiting profile: {e}")
             finally:
                 try:

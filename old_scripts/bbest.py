@@ -23,7 +23,7 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 
 # Support multiple games (list of Steam app ids)
 # NOTE: user sometimes pastes a single string with commas. We accept both formats.
-RAW_GAME_IDS = ["2746910", "1990110"]  # keep your original entry here
+RAW_GAME_IDS = ["3314790, 646570, 2379780, 3405340, 2427700"]  # keep your original entry here
 TEST_MODE = False
 MAX_SCROLLS = 2 if TEST_MODE else 20
 WAIT_BETWEEN_SCROLLS = 1.5
@@ -31,8 +31,7 @@ WAIT_BETWEEN_SCROLLS = 1.5
 # loading new curator entries (useful for games with many curators, e.g. ~1100)
 SCROLL_UNTIL_END = False
 # output filename is computed in main after normalization of GAME_IDS
-# Reduce the default MAX_CONCURRENT value to limit the number of pages opened simultaneously
-MAX_CONCURRENT = 1  # Adjusted to open only one page at a time
+MAX_CONCURRENT = 3  # number of parallel tabs/workers
 
 # Navigation / retry tuning (adjust if Steam is slow or rate-limiting you)
 NAV_TIMEOUT_MS = 30000     # 30s navigation timeout
@@ -260,84 +259,36 @@ async def process_curator(curator, page_pool, appid=None, app_name=None, listing
                 if about_link_el:
                     about_url = await about_link_el.get_attribute("href")
                     if about_url:
-                        for attempt in range(NAV_RETRIES + 2):  # Increase retries
+                        for attempt in range(NAV_RETRIES + 1):
                             try:
                                 await page2.goto(about_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
                                 break
                             except PlaywrightTimeoutError:
-                                if attempt < NAV_RETRIES + 1:
+                                if attempt < NAV_RETRIES:
                                     await asyncio.sleep(NAV_RETRY_SLEEP)
                                 else:
-                                    print(f"[{name}] Timeout navigating to About page after {NAV_RETRIES + 2} attempts")
+                                    print(f"[{name}] Timeout navigating to about page after {NAV_RETRIES+1} attempts")
 
                         desc_el = await page2.query_selector(
-                            "div.about_container div.desc p.tagline, div.about_container div.desc"
+                            "div.about_container div.desc, div.about_container p.tagline"
                         )
                         if desc_el:
                             text = await desc_el.inner_text()
                             about_me = (text or "").strip()
-                            print(f"[DEBUG] Extracted 'about_me' from About page: {about_me}")
-
-                        # Additional fallback: extract from main profile page if About fails
-                        if not about_me:
+                            # Aggressively remove badges/lines that look like follower/review counts or 'POSTED'
                             try:
-                                body_text = (await page2.inner_text('body') or "").strip()
-                                about_me = body_text[:500]  # Limit to 500 chars
-                                print(f"[DEBUG] Fallback 'about_me' extracted from body: {about_me}")
-                            except Exception as e:
-                                print(f"[DEBUG] Failed to extract 'about_me' from body: {e}")
-
-                        # Enhanced fallback logic for 'About Me' extraction
-                        if not about_me:
-                            try:
-                                # Additional wait for dynamic content
-                                await asyncio.sleep(2)  # Wait for 2 seconds to allow dynamic content to load
-
-                                # Attempt alternative selectors for 'About Me'
-                                for selector in [
-                                    "div.profile_about p",
-                                    "div.profile_about",
-                                    "div.curator_about",
-                                    "div.curator_description",
-                                    "body"
-                                ]:
-                                    try:
-                                        about_me_elem = await page2.query_selector(selector)
-                                        about_me = (await about_me_elem.inner_text()).strip() if about_me_elem else about_me
-                                        if about_me:
-                                            print(f"[DEBUG] Extracted 'about_me' using selector '{selector}': {about_me}")
-                                            break
-                                    except Exception as e:
-                                        print(f"[DEBUG] Failed to extract 'about_me' using selector '{selector}': {e}")
-
-                            except Exception as e:
-                                print(f"[DEBUG] Failed to extract 'about_me' using enhanced fallback: {e}")
-
-                            # Remove 'followers' and 'reviews posted' from 'about_me'
-                            if about_me:
-                                # Clean the 'about_me' field to remove unwanted text
-                                about_me = re.sub(r"\n?\s*[\d,]+\s*(?:CURATOR|CREATOR)?\s*FOLLOWERS\b.*", "", about_me, flags=re.I)
+                                # remove lines that are just a number + label, e.g. '25,966\nCURATOR FOLLOWERS' or '1,855\nREVIEWS POSTED'
+                                about_me = re.sub(r"\n?\s*[\d,]+\s*(?:CURATOR|CREATOR|)\s*FOLLOWERS\b.*", "", about_me, flags=re.I)
                                 about_me = re.sub(r"\n?\s*[\d,]+\s*(?:REVIEWS|REVIEWS POSTED|POSTED)\b.*", "", about_me, flags=re.I)
+                                # remove any remaining 'POSTED' tokens
                                 about_me = re.sub(r"\bPOSTED\b", "", about_me, flags=re.I)
+                                # collapse excessive whitespace/newlines
                                 about_me = re.sub(r"\s+", " ", about_me).strip()
-                                print(f"[DEBUG] Cleaned 'about_me': {about_me}")
-
-                # If we still don't have a reviews_count, try scanning the page body for a reviews badge
-                if not reviews_count:
-                    try:
-                        body_text = (await page2.inner_text('body') or "").strip()
-                        m2 = re.search(r"([\d,]+)\s*(?:REVIEWS|REVIEWS POSTED|POSTED)", body_text, flags=re.I)
-                        if m2:
-                            try:
-                                reviews_count = int(m2.group(1).replace(",", ""))
-                                print(f"[DEBUG] Extracted 'reviews_count': {reviews_count}")
-                            except Exception as e:
-                                print(f"[DEBUG] Failed to parse 'reviews_count': {e}")
-                        else:
-                            print("[DEBUG] No match found for 'reviews_count' in body text.")
-                    except Exception as e:
-                        print(f"[DEBUG] Failed to extract 'reviews_count' from body: {e}")
-
+                            except Exception:
+                                pass
+                            possible_email = await extract_email_from_text(text)
+                            if possible_email:
+                                email_found = possible_email
             except PlaywrightTimeoutError:
                 print(f"[{name}] Timeout on profile page")
             except Exception as e:
@@ -357,7 +308,6 @@ async def process_curator(curator, page_pool, appid=None, app_name=None, listing
             "about_me": about_me,
             "sample_review": sample_review,
             "email": email_found,
-            "reviews": reviews_count,
         }
 
     except Exception as e:
@@ -370,7 +320,6 @@ async def process_curator(curator, page_pool, appid=None, app_name=None, listing
             "about_me": "",
             "sample_review": "",
             "email": "",
-            "reviews": reviews_count,
         }
 
 
@@ -384,13 +333,7 @@ async def main():
     parser.add_argument("--concurrency", dest="concurrency", type=int, help="Override MAX_CONCURRENT")
     parser.add_argument("--output-file", dest="output_file", help="Force the output CSV filename (optional)")
     parser.add_argument("--export-new-only", dest="export_new_only", action="store_true", help="Export only newly discovered curators (requires --input-csv)")
-    # By default the script runs in headless mode to avoid opening visible browser windows.
-    # Provide --no-headless to force visible browser windows when debugging.
-    parser.add_argument("--no-headless", dest="no_headless", action="store_true", help="Run browser with visible windows (non-headless)")
     args = parser.parse_args()
-
-    # Default to headless mode unless user passes --no-headless
-    headless_mode = not getattr(args, 'no_headless', False)
 
     # Allow overriding flags via CLI
     global SCROLL_UNTIL_END, MAX_CONCURRENT
@@ -456,7 +399,6 @@ async def main():
                     'about_me': r.get('about_me') or '',
                     'sample_review': r.get('sample_review') or '',
                     'email': r.get('email') or '',
-                    'reviews': int(r.get('reviews') or 0) if r.get('reviews') else 0,
                 }
                 agg[key] = {'data': rec, 'games': games}
         return agg
@@ -481,20 +423,9 @@ async def main():
             pass
         return f"Unknown ({appid})"
 
-    # Add retry mechanism for page creation
     async with async_playwright() as p:
-        try:
-            print(f"[DEBUG] Launching browser in {'headless' if headless_mode else 'non-headless'} mode...")
-            # Ensure all browser launches respect the headless_mode setting
-            browser = await p.chromium.launch(headless=headless_mode)  # Toggle headless mode
-            print("[DEBUG] Browser launched in headless mode:", headless_mode)
-
-            # Ensure all new pages respect the headless mode
-            page = await browser.new_page()
-            print("[DEBUG] New page created in browser.")
-        except Exception as e:
-            print(f"[ERROR] Failed during browser or page setup: {e}")
-            raise
+        # Run headless so windows don't steal focus
+        browser = await p.chromium.launch(headless=True)
 
         # Create a small pool of pages for profile visits (limits visible tabs)
         # We set the user-agent on each pooled page to reduce bot-detection.
@@ -514,238 +445,9 @@ async def main():
 
         # semaphore used by all workers
         semaphore = asyncio.Semaphore(MAX_CONCURRENT)
-
-        # New: worker that accepts plain data (no ElementHandle) to avoid keeping page handles alive
-        async def process_curator_by_url(profile_link, name, page_pool, followers=None, appid=None, app_name=None, listing_review=None):
-            """Visit a curator profile URL using a pooled page and extract details.
-            This mirrors the logic in process_curator but works from strings only to avoid
-            holding ElementHandle references from the listing page (which Playwright may GC).
-            """
-            about_me = ""
-            sample_review = ""
-            external_site = ""
-            email_found = ""
-            # Start with the followers value extracted from the listing (if provided)
-            followers = followers or "N/A"
-            reviews_count = 0
-
-            if not profile_link:
-                return {
-                    "curator_name": name or 'N/A',
-                    "steam_profile": profile_link or '',
-                    "followers": followers,
-                    "external_site": external_site,
-                    "about_me": about_me,
-                    "sample_review": sample_review,
-                    "reviews": reviews_count,
-                    "email": email_found,
-                }
-
-            page2 = await page_pool.get()
-            try:
-                try:
-                    await page2.set_default_navigation_timeout(NAV_TIMEOUT_MS)
-                except Exception:
-                    pass
-                try:
-                    await page2.set_extra_http_headers({"User-Agent": DEFAULT_USER_AGENT})
-                except Exception:
-                    pass
-
-                # Retry navigating to profile
-                for attempt in range(NAV_RETRIES + 1):
-                    try:
-                        await page2.goto(profile_link, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
-                        break
-                    except PlaywrightTimeoutError:
-                        if attempt < NAV_RETRIES:
-                            await asyncio.sleep(NAV_RETRY_SLEEP)
-                        else:
-                            print(f"[{name}] Timeout navigating to profile after {NAV_RETRIES+1} attempts")
-
-                # Try to find followers on the profile page
-                try:
-                    follower_elem = await page2.query_selector("div.followers span")
-                    if follower_elem:
-                        followers = (await follower_elem.inner_text()).strip() or 'N/A'
-                except Exception:
-                    pass
-
-                # External link under profile name
-                try:
-                    site_link_el = await page2.query_selector("a.curator_url.ttip")
-                    if site_link_el:
-                        external_site, email_from_link = await extract_email_from_link(site_link_el)
-                        if email_from_link:
-                            email_found = email_from_link
-                except Exception:
-                    pass
-
-                # Sample review extraction: prefer listing_review provided earlier
-                if listing_review and not sample_review:
-                    try:
-                        sample_review = (listing_review or "").strip()[:800]
-                    except Exception:
-                        pass
-
-                # Search for candidate review links or review blocks on the profile page
-                try:
-                    review_page_selectors = [
-                        "div.apphub_UserReviewCardContent", "div.review_box", "div.user_review",
-                        "div.review_body", "div.review_text", "div.reviews p", "div.text"
-                    ]
-
-                    candidate_review_href = None
-                    try:
-                        anchors = await page2.query_selector_all('a')
-                        for a in anchors:
-                            ahref = await a.get_attribute('href') or ''
-                            if not ahref:
-                                continue
-                            if appid and (f"/app/{appid}" in ahref or f"app={appid}" in ahref or re.search(rf"{re.escape(str(appid))}", ahref)):
-                                candidate_review_href = urllib.parse.urljoin(page2.url, ahref)
-                                break
-                    except Exception:
-                        candidate_review_href = None
-
-                    if candidate_review_href:
-                        try:
-                            await page2.goto(candidate_review_href, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
-                            for sel in review_page_selectors:
-                                try:
-                                    rev_el = await page2.query_selector(sel)
-                                    if rev_el:
-                                        txt = (await rev_el.inner_text()).strip()
-                                        if txt and "no more reviews" not in txt.lower():
-                                            sample_review = txt.replace("\n", " ")[:1200]
-                                            break
-                                except Exception:
-                                    continue
-                        except Exception:
-                            sample_review = sample_review or ""
-
-                    if not sample_review:
-                        for sel in review_page_selectors:
-                            try:
-                                rev_els = await page2.query_selector_all(sel)
-                                if not rev_els:
-                                    continue
-                                found_review = None
-                                for rev_el in rev_els:
-                                    try:
-                                        txt = (await rev_el.inner_text()).strip()
-                                        if "no more reviews" in (txt or "").lower():
-                                            continue
-                                        anchors = await rev_el.query_selector_all('a')
-                                        matched = False
-                                        for a in anchors:
-                                            ahref = await a.get_attribute('href') or ''
-                                            if ahref and appid and re.search(rf"{re.escape(str(appid))}", ahref):
-                                                matched = True
-                                                break
-                                        if not matched and app_name and app_name.lower() in (txt or "").lower():
-                                            matched = True
-                                        if matched:
-                                            found_review = txt
-                                            break
-                                    except Exception:
-                                        continue
-                                if found_review:
-                                    sample_review = found_review.replace("\n", " ")[:1200]
-                                    break
-                                if not sample_review and rev_els:
-                                    try:
-                                        first_txt = (await rev_els[0].inner_text()).strip()
-                                        if first_txt and "no more reviews" not in first_txt.lower():
-                                            sample_review = first_txt.replace("\n", " ")[:1200]
-                                    except Exception:
-                                        pass
-                            except Exception:
-                                continue
-                except Exception:
-                    sample_review = sample_review or ""
-
-                # About page (may contain an email and about text)
-                try:
-                    about_link_el = await page2.query_selector("a.about")
-                    if about_link_el:
-                        about_url = await about_link_el.get_attribute("href")
-                        if about_url:
-                            for attempt in range(NAV_RETRIES + 2):  # Increase retries
-                                try:
-                                    await page2.goto(about_url, timeout=NAV_TIMEOUT_MS, wait_until="domcontentloaded")
-                                    break
-                                except PlaywrightTimeoutError:
-                                    if attempt < NAV_RETRIES + 1:
-                                        await asyncio.sleep(NAV_RETRY_SLEEP)
-                                    else:
-                                        print(f"[{name}] Timeout navigating to About page after {NAV_RETRIES + 2} attempts")
-
-                            desc_el = await page2.query_selector(
-                                "div.about_container div.desc p.tagline, div.about_container div.desc"
-                            )
-                            if desc_el:
-                                text = await desc_el.inner_text()
-                                about_me = (text or "").strip()
-                                print(f"[DEBUG] Extracted 'about_me' from About page: {about_me}")
-
-                                # Additional fallback: extract from main profile page if About fails
-                                if not about_me:
-                                    try:
-                                        body_text = (await page2.inner_text('body') or "").strip()
-                                        about_me = body_text[:500]  # Limit to 500 chars
-                                        print(f"[DEBUG] Fallback 'about_me' extracted: {about_me}")
-                                    except Exception as e:
-                                        print(f"[DEBUG] Failed to extract 'about_me' from body: {e}")
-                except Exception:
-                    pass
-
-                # If we still don't have a reviews_count, try scanning the page body for a reviews badge
-                try:
-                    if not reviews_count:
-                        try:
-                            body_text = (await page2.inner_text('body') or "").strip()
-                            m2 = re.search(r"([\d,]+)\s*(?:REVIEWS|REVIEWS POSTED|POSTED)", body_text, flags=re.I)
-                            if m2:
-                                try:
-                                    reviews_count = int(m2.group(1).replace(",", ""))
-                                    print(f"[DEBUG] Extracted 'reviews_count': {reviews_count}")
-                                except Exception as e:
-                                    print(f"[DEBUG] Failed to parse 'reviews_count': {e}")
-                            else:
-                                print("[DEBUG] No match found for 'reviews_count' in body text.")
-                        except Exception as e:
-                            print(f"[DEBUG] Failed to extract 'reviews_count' from body: {e}")
-                except Exception:
-                    pass
-
-            except PlaywrightTimeoutError:
-                print(f"[{name}] Timeout on profile page")
-            except Exception as e:
-                print(f"[{name}] Error when visiting profile: {e}")
-            finally:
-                try:
-                    await page2.goto('about:blank', timeout=5000)
-                except Exception:
-                    pass
-                await page_pool.put(page2)
-
-            return {
-                "curator_name": name or 'N/A',
-                "steam_profile": profile_link or '',
-                "followers": followers,
-                "external_site": external_site,
-                "about_me": about_me,
-                "sample_review": sample_review,
-                "reviews": reviews_count,
-                "email": email_found,
-            }
-
-        async def sem_task(curator_data, appid=None, app_name=None, listing_review=None):
+        async def sem_task(curator, appid=None, app_name=None, listing_review=None):
             async with semaphore:
-                # curator_data is a tuple (profile_link, name, followers)
-                profile_link, name, followers = curator_data
-                return await process_curator_by_url(profile_link, name, page_pool, followers=followers, appid=appid, app_name=app_name, listing_review=listing_review)
+                return await process_curator(curator, page_pool, appid=appid, app_name=app_name, listing_review=listing_review)
 
         # If aggregated was not loaded from CSV earlier, start empty
         # aggregated variable may already contain preloaded entries
@@ -760,20 +462,12 @@ async def main():
                 await page.set_default_navigation_timeout(NAV_TIMEOUT_MS)
             except Exception:
                 pass
-
-            # Retry navigating to the curator page
-            for attempt in range(NAV_RETRIES + 1):
-                try:
-                    await page.goto(curator_page_url, timeout=NAV_TIMEOUT_MS * 2, wait_until="networkidle")
-                    break  # Exit loop if navigation succeeds
-                except Exception as e:
-                    if attempt < NAV_RETRIES:
-                        print(f"[WARNING] Retry {attempt + 1}/{NAV_RETRIES} for appid {appid}: {e}")
-                        await asyncio.sleep(NAV_RETRY_SLEEP)
-                    else:
-                        print(f"[ERROR] Failed to load curator page for appid {appid} after {NAV_RETRIES + 1} attempts: {e}")
-                        await page.close()
-                        return
+            try:
+                await page.goto(curator_page_url, timeout=NAV_TIMEOUT_MS, wait_until="networkidle")
+            except PlaywrightTimeoutError:
+                print(f"[{app_name}] Timeout loading curator listing for appid {appid}")
+                await page.close()
+                continue
 
             # Scroll the page according to mode
             if SCROLL_UNTIL_END:
@@ -813,9 +507,6 @@ async def main():
                 name = (await name_elem.inner_text()).strip() if name_elem else "N/A"
                 profile_elem = await curator.query_selector("a.profile_avatar")
                 profile_link = await profile_elem.get_attribute("href") if profile_elem else ""
-                # Extract follower count from the listing block (preserve this value)
-                follower_elem = await curator.query_selector("div.followers span")
-                follower_text = (await follower_elem.inner_text()).strip() if follower_elem else "N/A"
                 key = profile_link if profile_link else name
                 if key in aggregated:
                     aggregated[key]["games"].add(app_name)
@@ -860,9 +551,7 @@ async def main():
                 except Exception:
                     listing_snippet = ""
 
-                # Immediately extract the minimal data (strings) and schedule the worker that uses only URLs/names.
-                curator_data = (profile_link, name, follower_text)
-                tasks.append(sem_task(curator_data, appid, app_name, listing_review=listing_snippet))
+                tasks.append(sem_task(curator, appid, app_name, listing_review=listing_snippet))
                 keys.append(key)
 
             results = []
@@ -892,12 +581,6 @@ async def main():
             games_field = ";".join(sorted(entry["games"]))
             row["game"] = games_field
 
-            # Ensure we have a numeric reviews value (may have been populated by worker)
-            try:
-                row["reviews"] = int(row.get("reviews") or 0)
-            except Exception:
-                row["reviews"] = 0
-
             # Validate that the email field contains a proper email pattern; clear it otherwise
             email_val = (row.get("email") or "").strip()
             if email_val and re.search(r"[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+", email_val):
@@ -906,21 +589,6 @@ async def main():
             else:
                 row["has_email"] = 0
                 row["email"] = ""
-
-            # Initialize 'about_me' with a default value to avoid scope issues
-            about_me = row.get("about_me", "[ERROR: Unable to extract 'about me' section]")
-            if not about_me:
-                about_me = "[ERROR: Unable to extract 'about me' section]"
-            print(f"[DEBUG] Final 'about_me' before saving: {about_me}")
-
-            # Apply cleaning logic to 'about_me' before saving
-            about_me = re.sub(r"\n?\s*[\d,]+\s*(?:CURATOR|CREATOR)?\s*FOLLOWERS\b.*", "", about_me, flags=re.I)
-            about_me = re.sub(r"\n?\s*[\d,]+\s*(?:REVIEWS|REVIEWS POSTED|POSTED)\b.*", "", about_me, flags=re.I)
-            about_me = re.sub(r"\bPOSTED\b", "", about_me, flags=re.I)
-            about_me = re.sub(r"\s+", " ", about_me).strip()
-            print(f"[DEBUG] Cleaned 'about_me' before saving: {about_me}")
-            row["about_me"] = about_me
-
             final_rows.append(row)
 
         # If user requested only newly discovered curators and an input CSV was provided,
@@ -930,9 +598,9 @@ async def main():
             # determine which rows correspond to newly_added_keys
             rows_to_write = [r for k, r in zip(aggregated.keys(), final_rows) if k in newly_added_keys]
 
-        # Save CSV (include reviews, game and has_email columns)
+        # Save CSV (include game and has_email columns)
         with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as f:
-            fieldnames = ["curator_name", "steam_profile", "followers", "reviews", "external_site", "about_me", "sample_review", "email", "has_email", "game"]
+            fieldnames = ["curator_name", "steam_profile", "followers", "external_site", "about_me", "sample_review", "email", "has_email", "game"]
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows_to_write)
