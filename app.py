@@ -107,6 +107,68 @@ if run_filler_now:
         else:
             st.warning('Filler did not produce an output file. Check logs above for details.')
 
+# --- New: Extract emails directly from about_me text ---
+st.markdown("---")
+st.header("Extract emails from about_me — quick scan")
+with st.form(key="email_extractor_form"):
+    email_input_upload = st.file_uploader("CSV to scan for emails (optional)", type=["csv"], key="email_input_upload")
+    email_existing_path = st.text_input("Or existing CSV path (repo-relative)", value="dice_filled.csv")
+    email_output_name = st.text_input("Output filename (optional)", value="")
+    run_email_extractor = st.form_submit_button("Run email extractor")
+
+if run_email_extractor:
+    tmpdir_e = Path(tempfile.mkdtemp(prefix="steam_email_"))
+    input_csv_path = None
+    if email_input_upload is not None:
+        input_csv_path = tmpdir_e / f"uploaded_input_{int(time.time())}.csv"
+        with open(input_csv_path, "wb") as f:
+            f.write(email_input_upload.getbuffer())
+    else:
+        candidate_path = Path(email_existing_path)
+        if not candidate_path.is_absolute():
+            candidate_path = Path.cwd() / candidate_path
+        if candidate_path.exists():
+            input_csv_path = candidate_path
+        else:
+            st.error(f"CSV not found: {candidate_path}")
+
+    if input_csv_path:
+        if email_output_name and email_output_name.strip():
+            out_path = Path.cwd() / email_output_name.strip()
+        else:
+            out_path = Path(str(input_csv_path).rsplit('.', 1)[0] + '_emails.csv')
+
+        cmd = ["python", "extract_emails_from_about.py", "--input", str(input_csv_path), "--output", str(out_path)]
+        st.info("Running extractor: " + " ".join(cmd))
+
+        log_box = st.empty()
+        log_lines = []
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        try:
+            while True:
+                line = proc.stdout.readline()
+                if line == '' and proc.poll() is not None:
+                    break
+                if line:
+                    for sub in line.splitlines():
+                        log_lines.append(sub)
+                        if len(log_lines) > 2000:
+                            log_lines = log_lines[-2000:]
+                    log_box.markdown("```text\n" + "\n".join(log_lines) + "\n```")
+            proc.wait()
+        except Exception as e:
+            st.error(f"Error while running extractor: {e}")
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+
+        if out_path.exists():
+            st.success(f"Extractor finished — output: {out_path.name}")
+            with open(out_path, 'rb') as fh:
+                st.download_button('Download CSV with emails', fh.read(), file_name=out_path.name, mime='text/csv')
+        else:
+            st.warning('Extractor did not produce an output file. Check logs above for details.')
+
 if run_btn:
     # prepare temp directory for inputs and outputs
     tmpdir = Path(tempfile.mkdtemp(prefix="steam_scraper_"))
