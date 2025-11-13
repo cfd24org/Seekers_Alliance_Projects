@@ -169,6 +169,81 @@ if run_email_extractor:
         else:
             st.warning('Extractor did not produce an output file. Check logs above for details.')
 
+# --- New: Steam search scraper UI ---
+st.markdown("---")
+st.header("Steam Search Scraper — collect game names & ids")
+with st.form(key="steam_search_form"):
+    search_queries_text = st.text_area("Search queries (one per line)", height=120, placeholder="roguelike\naction")
+    search_queries_file = st.file_uploader("Or upload a queries file (one query per line)", type=["txt", "csv"], key="search_queries_file")
+    search_pages = st.number_input("Pages per query", min_value=1, max_value=10, value=1)
+    search_output_name = st.text_input("Output filename (optional)", value="steam_games.csv")
+    search_no_headless = st.checkbox("Show browser while scraping (no-headless)", value=False)
+    search_debug_dir = st.text_input("Debug dir for HTML snapshots (optional)", value="")
+    run_search = st.form_submit_button("Run Steam search scraper")
+
+if run_search:
+    tmpdir_s = Path(tempfile.mkdtemp(prefix="steam_search_"))
+    st.info(f"Working directory: {tmpdir_s}")
+    queries_path = None
+    # prefer uploaded file
+    if search_queries_file is not None:
+        queries_path = tmpdir_s / f"uploaded_queries_{int(time.time())}.txt"
+        with open(queries_path, "wb") as f:
+            f.write(search_queries_file.getbuffer())
+    else:
+        # use text area
+        lines = [l.strip() for l in search_queries_text.splitlines() if l.strip()]
+        if lines:
+            queries_path = tmpdir_s / f"queries_{int(time.time())}.txt"
+            with open(queries_path, "w", encoding="utf-8") as f:
+                for l in lines:
+                    f.write(l + "\n")
+    if not queries_path or not queries_path.exists():
+        st.error("No queries provided. Paste queries or upload a queries file.")
+    else:
+        # prepare output path
+        output_path = tmpdir_s / (search_output_name.strip() if search_output_name.strip() else "steam_games.csv")
+        cmd = ["python", "steam_search_scrape.py", "--queries-file", str(queries_path), "--output", str(output_path), "--pages", str(int(search_pages))]
+        if search_no_headless:
+            cmd.append("--no-headless")
+        if search_debug_dir and search_debug_dir.strip():
+            # ensure debug dir is an absolute path inside tmpdir if relative
+            dbg = search_debug_dir.strip()
+            dbg_path = Path(dbg)
+            if not dbg_path.is_absolute():
+                dbg_path = tmpdir_s / dbg_path
+            dbg_path.mkdir(parents=True, exist_ok=True)
+            cmd += ["--debug-dir", str(dbg_path)]
+
+        st.write("Running:", " ".join(cmd))
+        log_box = st.empty()
+        log_lines = []
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        try:
+            while True:
+                line = proc.stdout.readline()
+                if line == '' and proc.poll() is not None:
+                    break
+                if line:
+                    for sub in line.splitlines():
+                        log_lines.append(sub)
+                        if len(log_lines) > 2000:
+                            log_lines = log_lines[-2000:]
+                    log_box.markdown("```text\n" + "\n".join(log_lines) + "\n```")
+            proc.wait()
+        except Exception as e:
+            st.error(f"Error while running search scraper: {e}")
+        finally:
+            if proc.poll() is None:
+                proc.terminate()
+
+        if output_path.exists():
+            st.success(f"Search finished — output: {output_path.name}")
+            with open(output_path, 'rb') as fh:
+                st.download_button('Download CSV', fh.read(), file_name=output_path.name, mime='text/csv')
+        else:
+            st.warning('Search did not produce an output file. Check logs above for details.')
+
 if run_btn:
     # prepare temp directory for inputs and outputs
     tmpdir = Path(tempfile.mkdtemp(prefix="steam_scraper_"))
