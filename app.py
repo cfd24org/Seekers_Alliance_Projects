@@ -244,6 +244,67 @@ if run_search:
         else:
             st.warning('Search did not produce an output file. Check logs above for details.')
 
+# --- New: Steam Charts (Most Played) scraper UI ---
+st.markdown("---")
+st.header("Steam Charts — Top N Most Played")
+with st.form(key="steam_charts_form"):
+    charts_count = st.number_input("Number of top chart games to collect", min_value=1, max_value=2000, value=200)
+    charts_output_name = st.text_input("Output filename (optional)", value="steam_charts.csv")
+    charts_include_details = st.checkbox("Collect curator counts (slow; visits each game page)", value=False)
+    charts_no_headless = st.checkbox("Show browser while scraping (no-headless)", value=False)
+    charts_debug_dir = st.text_input("Debug dir for HTML snapshots (optional)", value="")
+    run_charts = st.form_submit_button("Run charts scraper")
+
+if run_charts:
+    tmpdir_c = Path(tempfile.mkdtemp(prefix="steam_charts_"))
+    st.info(f"Working directory: {tmpdir_c}")
+
+    # build command
+    output_path = tmpdir_c / (charts_output_name.strip() if charts_output_name.strip() else "steam_charts.csv")
+    cmd = ["python", "steam_search_scrape.py", "--charts", "--charts-count", str(int(charts_count)), "--output", str(output_path)]
+    if charts_no_headless:
+        cmd.append("--no-headless")
+    # if user does not want slow detail visits, pass --no-details
+    if not charts_include_details:
+        cmd.append("--no-details")
+    if charts_debug_dir and charts_debug_dir.strip():
+        dbg = charts_debug_dir.strip()
+        dbg_path = Path(dbg)
+        if not dbg_path.is_absolute():
+            dbg_path = tmpdir_c / dbg_path
+        dbg_path.mkdir(parents=True, exist_ok=True)
+        cmd += ["--debug-dir", str(dbg_path)]
+
+    st.write("Running:", " ".join(cmd))
+    log_box = st.empty()
+    log_lines = []
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+    try:
+        while True:
+            line = proc.stdout.readline()
+            if line == '' and proc.poll() is not None:
+                break
+            if line:
+                for sub in line.splitlines():
+                    log_lines.append(sub)
+                    if len(log_lines) > 2000:
+                        log_lines = log_lines[-2000:]
+                log_box.markdown("```text\n" + "\n".join(log_lines) + "\n```")
+        proc.wait()
+    except Exception as e:
+        st.error(f"Error while running charts scraper: {e}")
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+
+    if output_path.exists():
+        st.success(f"Charts scraping finished — output: {output_path.name}")
+        with open(output_path, 'rb') as fh:
+            st.download_button('Download CSV', fh.read(), file_name=output_path.name, mime='text/csv')
+        st.balloons()
+    else:
+        st.warning('Charts scraper did not produce an output file. Check logs above for details.')
+
 if run_btn:
     # prepare temp directory for inputs and outputs
     tmpdir = Path(tempfile.mkdtemp(prefix="steam_scraper_"))
