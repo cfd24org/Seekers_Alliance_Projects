@@ -1,0 +1,6 @@
+playwright
+pandas
+beautifulsoup4
+requests
+lxml
+pytest

@@ -1,0 +1,2 @@
+# Archived copy: archived_requirements/reqs.txt
+# The active, curated requirements are in requirements.txt

@@ -1,0 +1,32 @@
+// filepath: /Users/crisostomo/Desktop/steam/requirements_full_backup.txt
+
+(backup of original /Users/crisostomo/Desktop/steam/requirements.txt)
+
+aiobotocore @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_1cl06d5vjc/croot/aiobotocore_1714464399334/work
+aiohappyeyeballs @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_170hwh6b2i/croot/aiohappyeyeballs_1725434022310/work
+aiohttp @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_4dbk4qcpk1/croot/aiohttp_1725527761629/work
+aioitertools @ file:///tmp/build/80754af9/aioitertools_1607109665762/work
+aiosignal @ file:///tmp/build/80754af9/aiosignal_1637843061372/work
+alabaster @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_39uesgct45/croot/alabaster_1718201495024/work
+altair @ file:///Users/builder/cbouss/perseverance-python-buildout/croot/altair_1699282542592/work
+anaconda-anon-usage @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_3eler6mjxh/croot/anaconda-anon-usage_1710965076906/work
+anaconda-catalogs @ file:///Users/builder/cbouss/perseverance-python-buildout/croot/anaconda-catalogs_1701813581302/work
+anaconda-client @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_4fl23009pr/croot/anaconda-client_1708640644054/work
+anaconda-cloud-auth @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_bazegf935a/croot/anaconda-cloud-auth_1713991395391/work
+anaconda-navigator @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_dbsedxpmfb/croot/anaconda-navigator_1727709704056/work
+anaconda-project @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_edkrilp7t2/croot/anaconda-project_1706049207276/work
+annotated-types @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_1fa2djihwb/croot/annotated-types_1709542925772/work
+anyio @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_a17a7759g2/croot/anyio_1706220182417/work
+appdirs==1.4.4
+applaunchservices @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_3ani429u_q/croot/applaunchservices_1710249784568/work
+appnope @ file:///Users/builder/cbouss/perseverance-python-buildout/croot/appnope_1699303798458/work
+appscript @ file:///private/var/folders/nz/j6p8yfhx1mv_0grj5xl4650h0000gp/T/abs_bev456p1le/croot/appscript_1725388760502/work
+archspec @ file:///croot/archspec_1709217642129/work
+argon2-cffi @ file:///opt/conda/conda-bld/argon2-cffi_1645000214183/work
+argon2-cffi-bindings @ file:///Users/builder/cbouss/perseverance-python-buildout/croot/argon2-cffi-bindings_1699251412744/work
+arrow @ file:///Users/builder/cbouss/perseverance-python-buildout/croot/arrow_1699251442701/work
+astroid @ file:///Users/builder/cbouss/perseverance-python-buildout/croot/astroid_1699240820293/work
+astropy @ file:///private/var/folders/k1/30mswbxs7r1g6zwn8y4fyt500000gp/T/abs_fea_ls8y83/croot/astropy_1726174615584/work
+... (file truncated for backup preview) ...
+
+(End of backup)

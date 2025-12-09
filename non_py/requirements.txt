@@ -1,0 +1,15 @@
+# Curated minimal requirements for the Steam/YouTube scraping pipelines
+streamlit>=1.20.0
+playwright>=1.55.0
+pandas>=2.0.0
+requests>=2.28.0
+beautifulsoup4>=4.12.0
+tenacity>=8.0.0
+pyarrow>=9.0.0
+lxml>=4.9.0
+python-dateutil>=2.9.0
+tqdm>=4.60.0
+# Optional but recommended for email/link extraction
+tldextract>=3.3.0
+# Pinning browser automation helper
+urllib3>=1.26.0
