@@ -19,13 +19,30 @@ st.title("YouTube discovery & contact extraction — UI")
 
 st.markdown("This UI runs the two working YouTube scripts as subprocesses and streams logs.\nUse the Discover form to find recent videos/channels, then use the Extract form against a videos CSV to pull contact links/emails.")
 
+import os
+try:
+    from python_src.shared import paths as shared_paths
+except Exception:
+    import sys
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from python_src.shared import paths as shared_paths
+
+# Ensure outputs dir exists
+OUT_DIR = shared_paths.OUTPUT_DIR
+try:
+    os.makedirs(OUT_DIR, exist_ok=True)
+except Exception:
+    pass
+
 # --- Discover form ---
 with st.form(key="yt_discover_form"):
     query = st.text_input("Search query", value="dice roguelike")
     max_channels = st.number_input("Max channels/videos", min_value=1, max_value=500, value=20)
     collect_videos = st.checkbox("Collect videos (return video links instead of channels)", value=False)
     no_headless = st.checkbox("Show browser during run (no-headless)", value=False)
-    discover_output = st.text_input("Output CSV path (repo-relative)", value=f"yt_discover_{int(time.time())}.csv")
+    discover_output = st.text_input("Output CSV path (repo-relative)", value=os.path.join(OUT_DIR, f"yt_discover_{int(time.time())}.csv"))
     run_discover = st.form_submit_button("Run discovery")
 
 if run_discover:
@@ -77,7 +94,7 @@ with st.form(key="yt_extract_form"):
     input_upload = st.file_uploader("Videos CSV to extract from (columns: video_url, channel_url)", type=["csv"]) 
     input_path = st.text_input("Or existing CSV path (repo-relative)", value="")
     extract_no_headless = st.checkbox("Show browser during run (no-headless)", value=False)
-    extract_output = st.text_input("Output CSV path (repo-relative)", value=f"yt_contacts_{int(time.time())}.csv")
+    extract_output = st.text_input("Output CSV path (repo-relative)", value=os.path.join(OUT_DIR, f"yt_contacts_{int(time.time())}.csv"))
     run_extract = st.form_submit_button("Run contact extraction")
 
 if run_extract:

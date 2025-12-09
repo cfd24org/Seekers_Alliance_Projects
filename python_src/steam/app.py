@@ -23,6 +23,17 @@ from pathlib import Path
 from collections import deque
 import uuid
 
+try:
+    from python_src.shared import paths as shared_paths
+except Exception:
+    import sys, os
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    from python_src.shared import paths as shared_paths
+
+OUT_DIR = shared_paths.OUTPUT_DIR
+
 st.set_page_config(page_title="Steam Curator Scraper UI", layout="centered")
 st.title("Steam Curator Scraper — GUI")
 
@@ -35,7 +46,7 @@ with st.form(key="scrape_form"):
     games_file = st.file_uploader("Or upload a games file (one appid per line)", type=["txt", "csv"])    
     scroll_until_end = st.checkbox("Scroll until end (collect full listings)", value=False)
     concurrency = st.slider("Concurrency (profile page workers)", min_value=1, max_value=6, value=1)
-    output_filename = st.text_input("Fixed output filename (optional, e.g. merged.csv)", value="")
+    output_filename = st.text_input("Fixed output filename (optional, e.g. merged.csv)", value=os.path.join(OUT_DIR, "merged.csv"))
     export_new_only = st.checkbox("Export only newly discovered curators (requires input CSV)", value=False)
     run_btn = st.form_submit_button("Run scraper")
 
