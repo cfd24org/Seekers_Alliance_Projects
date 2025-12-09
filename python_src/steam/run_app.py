@@ -18,7 +18,8 @@ import urllib.request
 import glob
 
 PORT = os.environ.get("STEAM_UI_PORT", "8501")
-STREAMLIT_CMD = [sys.executable, "-m", "streamlit", "run", "app.py", f"--server.port={PORT}", "--server.headless=true"]
+# STREAMLIT_CMD will be constructed in main() using the absolute path to the moved app.py
+# so the launcher works when run from the repository root or when packaged.
 
 def ensure_playwright_browsers():
     """Ensure Playwright browsers are installed. When packaging we prefer to install browsers at first run
@@ -76,6 +77,12 @@ def _run_streamlit_in_process():
 
 def main():
     env = os.environ.copy()
+
+    # Construct STREAMLIT_CMD with the absolute path to the app module so Streamlit
+    # runs the correct file regardless of current working directory.
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    app_path = os.path.join(script_dir, 'app.py')
+    STREAMLIT_CMD = [sys.executable, "-m", "streamlit", "run", app_path, f"--server.port={PORT}", "--server.headless=true"]
 
     # Clean up legacy CSV outputs in the repository root to avoid stale files with a 'reviews' column
     try:

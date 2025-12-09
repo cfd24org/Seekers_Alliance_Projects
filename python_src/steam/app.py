@@ -7,7 +7,7 @@ Simple Streamlit frontend for your existing bbest.py scraper.
 This app runs the existing `bbest.py` as a subprocess so your working script remains unchanged.
 Run locally with:
     pip install streamlit
-    streamlit run app.py
+    streamlit run python_src/steam/run_steam.py
 
 Notes:
 - The container or machine running this must have Playwright and the browser binaries installed.
