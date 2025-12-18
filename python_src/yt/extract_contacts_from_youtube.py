@@ -18,7 +18,7 @@ import csv
 import io
 import re
 import time
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, parse_qs, unquote
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 
@@ -31,9 +31,35 @@ SOCIAL_DOMAINS = [
     'twitter.com', 'x.com', 'instagram.com', 'twitch.tv', 'discord.gg', 'discord.com',
     'patreon.com', 'linkedin.com', 'facebook.com', 't.me'
 ]
+# map domains to clean column keys (avoid using split('.')[0] which is brittle)
+DOMAIN_KEY_MAP = {
+    'twitter.com': 'twitter',
+    'x.com': 'x',
+    'instagram.com': 'instagram',
+    'twitch.tv': 'twitch',
+    'discord.gg': 'discord',
+    'discord.com': 'discord',
+    'patreon.com': 'patreon',
+    'linkedin.com': 'linkedin',
+    'facebook.com': 'facebook',
+    't.me': 't_me',
+}
+
 URL_RE = re.compile(r"https?://[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]+")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
+
+
+def unwrap_youtube_redirect(u: str) -> str:
+    """If URL is a YouTube redirect, extract the actual target from the 'q' param."""
+    try:
+        if 'youtube.com/redirect' in u or 'youtube.com/redirect?' in u:
+            q = parse_qs(urlparse(u).query).get('q')
+            if q:
+                return unquote(q[0])
+    except Exception:
+        pass
+    return u
 
 
 def extract_links_and_emails(text):
@@ -130,6 +156,26 @@ def extract_contacts_from_channel(channel_url, page, debug_dir=None, idx=None):
                 pass
         page.wait_for_timeout(700)
 
+        # Try to extract a sensible channel name (fall back to page.title())
+        try:
+            cname = ''
+            try:
+                # common channel-name selectors (dialog or page header)
+                el = page.query_selector('ytd-channel-name yt-formatted-string, #channel-name yt-formatted-string, tp-yt-paper-dialog ytd-channel-name yt-formatted-string')
+                if el:
+                    cname = (el.inner_text() or '').strip()
+            except Exception:
+                cname = ''
+            if not cname:
+                try:
+                    title = page.title() or ''
+                    cname = title.replace(' - YouTube', '').strip()
+                except Exception:
+                    cname = ''
+            channel_name = cname
+        except Exception:
+            channel_name = channel_name
+
         # Extract header preview text (quick win) before attempting About navigation
         header_text = ''
         try:
@@ -202,7 +248,7 @@ def extract_contacts_from_channel(channel_url, page, debug_dir=None, idx=None):
                 matched = False
                 for sd in SOCIAL_DOMAINS:
                     if sd in dom:
-                        key = sd.split('.')[0]
+                        key = DOMAIN_KEY_MAP.get(sd, sd.split('.')[0])
                         found.setdefault(key, []).append(uu)
                         matched = True
                         break
@@ -312,6 +358,20 @@ def extract_contacts_from_channel(channel_url, page, debug_dir=None, idx=None):
                 except Exception:
                     about_node = None
 
+            # additional attempt: find tp-yt-paper-dialog and then query inside it for #about-container
+            if not about_node:
+                try:
+                    dialog = page.query_selector('tp-yt-paper-dialog')
+                    if dialog:
+                        try:
+                            inner = dialog.query_selector('#about-container')
+                            if inner:
+                                about_node = inner
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
             if about_node:
                 try:
                     # description container inside the about renderer
@@ -345,6 +405,7 @@ def extract_contacts_from_channel(channel_url, page, debug_dir=None, idx=None):
                     h = a.get_attribute('href') or ''
                     if h:
                         h = normalize_url('https://www.youtube.com', h)
+                        h = unwrap_youtube_redirect(h)
                         hrefs.append(h)
                 except Exception:
                     continue
@@ -374,7 +435,7 @@ def extract_contacts_from_channel(channel_url, page, debug_dir=None, idx=None):
                 matched = False
                 for sd in SOCIAL_DOMAINS:
                     if sd in dom:
-                        key = sd.split('.')[0]
+                        key = DOMAIN_KEY_MAP.get(sd, sd.split('.')[0])
                         found.setdefault(key, []).append(u)
                         matched = True
                         break
@@ -399,7 +460,7 @@ def extract_contacts_from_channel(channel_url, page, debug_dir=None, idx=None):
                 matched = False
                 for sd in SOCIAL_DOMAINS:
                     if sd in dom:
-                        key = sd.split('.')[0]
+                        key = DOMAIN_KEY_MAP.get(sd, sd.split('.')[0])
                         found.setdefault(key, []).append(u)
                         matched = True
                         break
@@ -407,6 +468,13 @@ def extract_contacts_from_channel(channel_url, page, debug_dir=None, idx=None):
                     found.setdefault('website', []).append(u)
             for e in emails:
                 found.setdefault('email', []).append(e)
+        except Exception:
+            pass
+
+        # close any dialog/panel we opened to return DOM to stable state
+        try:
+            page.keyboard.press('Escape')
+            page.wait_for_timeout(300)
         except Exception:
             pass
 
@@ -450,7 +518,8 @@ def extract_contacts(video_url, channel_url, page, debug_dir=None, idx=None):
             matched = False
             for sd in SOCIAL_DOMAINS:
                 if sd in dom:
-                    found.setdefault(sd.split('.')[0], []).append(u)
+                    key = DOMAIN_KEY_MAP.get(sd, sd.split('.')[0])
+                    found.setdefault(key, []).append(u)
                     matched = True
                     break
             if not matched:
@@ -494,7 +563,7 @@ def main():
         print('No rows in CSV')
         return
 
-    out_rows = []
+    raw_out_rows = []
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=not args.no_headless)
         context = browser.new_context(user_agent=USER_AGENT)
@@ -506,22 +575,16 @@ def main():
             if channel_url:
                 print(f'[{idx+1}/{len(rows)}] Channel: {channel_url}')
                 cname, found = extract_contacts_from_channel(channel_url, page, debug_dir=args.debug_dir, idx=idx)
-                contact_parts = []
-                for k, v in found.items():
-                    contact_parts.append(f"{k}={'|'.join(v)}")
                 out_row = dict(row)
                 out_row['channel_name_extracted'] = cname
-                out_row['found_contacts'] = ';'.join(contact_parts)
-                out_rows.append(out_row)
+                out_row['found'] = found
+                raw_out_rows.append(out_row)
             elif video_url:
                 print(f'[{idx+1}/{len(rows)}] Video fallback: {video_url}')
                 found = extract_contacts(video_url, row.get('channel_url'), page, debug_dir=args.debug_dir, idx=idx)
-                contact_parts = []
-                for k, v in found.items():
-                    contact_parts.append(f"{k}={'|'.join(v)}")
                 out_row = dict(row)
-                out_row['found_contacts'] = ';'.join(contact_parts)
-                out_rows.append(out_row)
+                out_row['found'] = found
+                raw_out_rows.append(out_row)
             else:
                 print(f'[{idx+1}/{len(rows)}] Skipping malformed row: {row}')
 
@@ -530,21 +593,61 @@ def main():
         except Exception:
             pass
 
-    if out_rows:
+    # Flatten results and build CSV fieldnames: preserve input columns, add channel_name_extracted, per-service columns, website_1..N and email_1..N
+    if raw_out_rows:
+        input_cols = list(rows[0].keys())
+        service_keys = list(dict.fromkeys(DOMAIN_KEY_MAP.values()))  # preserve order
+        # ensure 'discord' not duplicated and other services appear
+        # collect max website/email counts
+        max_web = 0
+        max_em = 0
+        for r in raw_out_rows:
+            f = r.get('found', {}) or {}
+            w = len(f.get('website', []))
+            e = len(f.get('email', []))
+            max_web = max(max_web, w)
+            max_em = max(max_em, e)
+            # also ensure services present in found are counted
+            for k in f.keys():
+                if k not in service_keys and k not in ('website', 'email'):
+                    service_keys.append(k)
+        # build final fieldnames
+        fieldnames = input_cols + ['channel_name_extracted'] + service_keys
+        for i in range(1, max_web + 1):
+            fieldnames.append(f'website_{i}')
+        for i in range(1, max_em + 1):
+            fieldnames.append(f'email_{i}')
+
+        final_rows = []
+        for r in raw_out_rows:
+            base = {k: r.get(k, '') for k in input_cols}
+            base['channel_name_extracted'] = r.get('channel_name_extracted', '')
+            f = r.get('found', {}) or {}
+            # populate service columns with pipe-joined values
+            for sk in service_keys:
+                base[sk] = '|'.join(f.get(sk, [])) if f.get(sk) else ''
+            # fill website_N and email_N
+            websites = f.get('website', [])
+            emails = f.get('email', [])
+            for i in range(1, max_web + 1):
+                base[f'website_{i}'] = websites[i-1] if i-1 < len(websites) else ''
+            for i in range(1, max_em + 1):
+                base[f'email_{i}'] = emails[i-1] if i-1 < len(emails) else ''
+            final_rows.append(base)
+
         with open(args.output, 'w', newline='', encoding='utf-8') as fh:
             try:
                 fh.write(f"# created_by: extract_contacts_from_youtube.py | {datetime.utcnow().isoformat()}Z\n")
             except Exception:
                 pass
-            fieldnames = list(out_rows[0].keys())
             writer = csv.DictWriter(fh, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(out_rows)
+            writer.writerows(final_rows)
         try:
             csv_helpers.prepend_author_note(args.output, created_by='extract_contacts_from_youtube.py')
         except Exception:
             pass
-        print(f'Wrote {args.output} ({len(out_rows)} rows)')
+        print(f'Wrote {args.output} ({len(final_rows)} rows)')
     else:
         print('No contacts extracted; no output written')
 
