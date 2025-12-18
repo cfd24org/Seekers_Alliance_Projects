@@ -62,14 +62,49 @@ def unwrap_youtube_redirect(u: str) -> str:
     return u
 
 
+# Robust email/link extraction with liberal deobfuscation
+COMMON_DOMAINS_NO_TLD = {'gmail', 'hotmail', 'yahoo', 'outlook', 'protonmail', 'icloud'}
+
+# Removed _canonicalize_email and aggressive normalization here — keep extraction light-weight.
+
 def extract_links_and_emails(text):
+    """Return (urls, emails) found in text. Lightweight extraction only — no heavy canonicalization.
+    Cleaning/normalization/deduplication is delegated to python_src.yt.clean_yt_contacts.
+    """
     if not text:
         return [], []
     txt = text.replace('%40', '@')
+    # First pass: straightforward URL and email matches
     urls = URL_RE.findall(txt)
     emails = EMAIL_RE.findall(txt)
-    emails = [e for e in emails if 'youtube' not in e and 'youtu.be' not in e]
-    return list(dict.fromkeys(urls)), list(dict.fromkeys(emails))
+
+    # Second pass: liberal deobfuscation for email-like text (but do not canonicalize)
+    cleaned = txt
+    subs = [
+        (r'\(at\)', '@'), (r'\[at\]', '@'), (r'\s+at\s+', '@'),
+        (r'\(dot\)', '.'), (r'\[dot\]', '.'), (r'\s+dot\s+', '.'),
+        (r'\s+\(dot\)\s+', '.'),
+    ]
+    for pat, repl in subs:
+        try:
+            cleaned = re.sub(pat, repl, cleaned, flags=re.IGNORECASE)
+        except Exception:
+            continue
+    cleaned = re.sub(r'\s*@\s*', '@', cleaned)
+    cleaned = re.sub(r'\s*\.\s*', '.', cleaned)
+
+    try:
+        more_emails = EMAIL_RE.findall(cleaned)
+        for me in more_emails:
+            if me not in emails:
+                emails.append(me)
+    except Exception:
+        pass
+
+    # Keep lists deterministic but avoid heavy normalization — simple dedupe preserving order
+    urls = list(dict.fromkeys(urls))
+    emails = list(dict.fromkeys(emails))
+    return urls, emails
 
 
 def domain_of(u: str):
@@ -486,11 +521,6 @@ def extract_contacts_from_channel(channel_url, page, debug_dir=None, idx=None):
             except Exception:
                 pass
 
-    # Dedupe lists
-    for k, v in list(found.items()):
-        if isinstance(v, list):
-            found[k] = list(dict.fromkeys(v))
-
     return channel_name, found
 
 
@@ -528,9 +558,6 @@ def extract_contacts(video_url, channel_url, page, debug_dir=None, idx=None):
             found.setdefault('email', []).append(e)
     except Exception:
         pass
-    for k, v in list(found.items()):
-        if isinstance(v, list):
-            found[k] = list(dict.fromkeys(v))
     return found
 
 

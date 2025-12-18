@@ -151,4 +151,71 @@ if run_extract:
         else:
             st.warning("Extraction did not produce an output CSV. Check logs above.")
 
+st.markdown("---")
+
+# --- Clean extracted contacts form ---
+with st.form(key="yt_clean_form"):
+    clean_input_upload = st.file_uploader("Extracted contacts CSV to clean", type=["csv"]) 
+    clean_input_path = st.text_input("Or existing extracted CSV path (repo-relative)", value="")
+    clean_output = st.text_input("Cleaned output CSV path (repo-relative)", value=os.path.join(OUT_DIR, f"yt_contacts_clean_{int(time.time())}.csv"))
+    clean_dry = st.checkbox("Dry run (don't write output)", value=False)
+    run_clean = st.form_submit_button("Run cleaner")
+
+if run_clean:
+    tmpdir = Path(tempfile.mkdtemp(prefix="yt_clean_"))
+    candidate = None
+    if clean_input_upload is not None:
+        candidate = tmpdir / f"uploaded_clean_in_{int(time.time())}.csv"
+        with open(candidate, 'wb') as f:
+            f.write(clean_input_upload.getbuffer())
+    else:
+        p = Path(clean_input_path)
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        if p.exists():
+            candidate = p
+    if not candidate or not Path(candidate).exists():
+        st.error("Input CSV not provided or not found")
+    else:
+        out_path = Path(clean_output)
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        cmd = ["python", "-m", "python_src.yt.clean_yt_contacts", "--input", str(candidate), "--output", str(out_path)]
+        if clean_dry:
+            cmd += ["--dry-run"]
+
+        st.info("Running: " + " ".join(cmd))
+        log_box = st.empty()
+        log_lines = []
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        try:
+            while True:
+                line = proc.stdout.readline()
+                if line == '' and proc.poll() is not None:
+                    break
+                if line:
+                    log_lines.append(line.rstrip())
+                    if len(log_lines) > 2000:
+                        log_lines = log_lines[-2000:]
+                    log_box.text_area("logs", value="\n".join(log_lines), height=300)
+            proc.wait()
+        except Exception as e:
+            st.error(f"Error while running cleaner: {e}")
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+        if out_path.exists():
+            st.success(f"Cleaner finished — output: {out_path}")
+            with open(out_path, 'rb') as fh:
+                st.download_button('Download cleaned CSV', fh.read(), file_name=out_path.name, mime='text/csv')
+        else:
+            if clean_dry:
+                st.info("Dry-run completed. No output written.")
+            else:
+                st.warning("Cleaner did not produce an output CSV. Check logs above.")
+
 st.markdown("\n---\nYou can run this UI directly with:\n\n    streamlit run python_src/yt/app.py\n\nOr from repository root with: python run_yt.py")
