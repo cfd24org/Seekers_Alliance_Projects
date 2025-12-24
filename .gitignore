@@ -1,0 +1,31 @@
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyc
+
+# Virtual environments
+venv/
+.venv/
+
+# Outputs and generated data
+outputs/
+outputs/*.csv
+outputs/.DS_Store
+
+# Distribution/build
+dist/
+build/
+*.egg-info/
+
+# Editor/IDE
+.vscode/
+.idea/
+
+# macOS
+# (macOS .DS_Store already listed above)
+
+# Misc
+*.log
