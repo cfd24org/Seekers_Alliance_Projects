@@ -50,6 +50,72 @@ EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
 
 
+def dismiss_youtube_consent(page, timeout=2000):
+    """Try to dismiss YouTube's cookie/consent dialog by clicking common localized buttons.
+    Returns True if a button was clicked, False otherwise.
+    """
+    try:
+        # small delay to let banner render
+        page.wait_for_timeout(300)
+    except Exception:
+        pass
+
+    candidates = [
+        'button:has-text("Reject all")',
+        'button:has-text("Reject")',
+        'button:has-text("Reject all cookies")',
+        'button:has-text("No, thanks")',
+        'button:has-text("No, thanks.")',
+        'button:has-text("Rechazar todo")',
+        'button:has-text("No aceptar")',
+        'tp-yt-paper-button:has-text("Reject all")',
+        'tp-yt-paper-button:has-text("Reject")',
+        'tp-yt-paper-button:has-text("Rechazar todo")',
+        'ytd-button-renderer:has-text("Reject all")',
+    ]
+
+    for sel in candidates:
+        try:
+            loc = page.locator(sel)
+            if loc.count():
+                try:
+                    loc.first.click(timeout=timeout)
+                    page.wait_for_timeout(400)
+                    return True
+                except Exception:
+                    continue
+        except Exception:
+            continue
+
+    # JS fallback: search buttons by common texts and click the first match
+    try:
+        clicked = page.evaluate(r"""
+            () => {
+                const texts = ["reject all","reject","rechazar todo","no aceptar","no, thanks","reject all cookies"];
+                const nodes = Array.from(document.querySelectorAll('button, a, tp-yt-paper-button, ytd-button-renderer'));
+                for (const n of nodes) {
+                    try {
+                        const t = (n.innerText || '').toLowerCase().trim();
+                        for (const tt of texts) {
+                            if (t === tt || t.includes(tt)) { n.click(); return true; }
+                        }
+                    } catch(e) { continue; }
+                }
+                return false;
+            }
+        """)
+        if clicked:
+            try:
+                page.wait_for_timeout(400)
+            except Exception:
+                pass
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
 def unwrap_youtube_redirect(u: str) -> str:
     """If URL is a YouTube redirect, extract the actual target from the 'q' param."""
     try:
@@ -190,6 +256,11 @@ def extract_contacts_from_channel(channel_url, page, debug_dir=None, idx=None):
             except Exception:
                 pass
         page.wait_for_timeout(700)
+        try:
+            # dismiss cookie/consent banner if present (regional/localized variants)
+            dismiss_youtube_consent(page)
+        except Exception:
+            pass
 
         # Try to extract a sensible channel name (fall back to page.title())
         try:
@@ -530,6 +601,10 @@ def extract_contacts(video_url, channel_url, page, debug_dir=None, idx=None):
     try:
         page.goto(video_url, timeout=25000)
         page.wait_for_timeout(700)
+        try:
+            dismiss_youtube_consent(page)
+        except Exception:
+            pass
         desc = ''
         try:
             el = page.query_selector('#description') or page.query_selector('yt-formatted-string.content')
