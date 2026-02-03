@@ -153,6 +153,80 @@ if run_extract:
 
 st.markdown("---")
 
+# --- Extract contacts (edition 2) form ---
+with st.form(key="yt_extract_contacts_ed2_form"):
+    ed2_input_upload = st.file_uploader("Channels CSV to extract descriptions from (columns: channel_url)", type=["csv"]) 
+    ed2_input_path = st.text_input("Or existing CSV path (repo-relative)", value="")
+    ed2_no_headless = st.checkbox("Show browser during run (no-headless)", value=False)
+    ed2_debug_dir = st.text_input("Debug directory (optional, repo-relative)", value="")
+    ed2_output = st.text_input("Output CSV path (repo-relative)", value=os.path.join(OUT_DIR, f"yt_descriptions_{int(time.time())}.csv"))
+    run_ed2_extract = st.form_submit_button("Run contact extraction (edition 2)")
+
+if run_ed2_extract:
+    tmpdir = Path(tempfile.mkdtemp(prefix="yt_ed2_extract_"))
+    candidate = None
+    if ed2_input_upload is not None:
+        candidate = tmpdir / f"uploaded_ed2_{int(time.time())}.csv"
+        with open(candidate, 'wb') as f:
+            f.write(ed2_input_upload.getbuffer())
+    else:
+        p = Path(ed2_input_path)
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        if p.exists():
+            candidate = p
+    if not candidate or not Path(candidate).exists():
+        st.error("Input CSV not provided or not found")
+    else:
+        out_path = Path(ed2_output)
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        cmd = ["python", "python_src/yt/extract_contacts.py", "--input", str(candidate), "--output", str(out_path)]
+        if ed2_no_headless:
+            cmd += ["--no-headless"]
+        if ed2_debug_dir.strip():
+            debug_p = Path(ed2_debug_dir)
+            if not debug_p.is_absolute():
+                debug_p = Path.cwd() / debug_p
+            try:
+                debug_p.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            cmd += ["--debug-dir", str(debug_p)]
+
+        st.info("Running: " + " ".join(cmd))
+        log_box = st.empty()
+        log_lines = []
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        try:
+            while True:
+                line = proc.stdout.readline()
+                if line == '' and proc.poll() is not None:
+                    break
+                if line:
+                    log_lines.append(line.rstrip())
+                    if len(log_lines) > 2000:
+                        log_lines = log_lines[-2000:]
+                    log_box.text_area("logs", value="\n".join(log_lines), height=300)
+            proc.wait()
+        except Exception as e:
+            st.error(f"Error while running edition 2 extraction: {e}")
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+        if out_path.exists():
+            st.success(f"Edition 2 extraction finished — output: {out_path}")
+            with open(out_path, 'rb') as fh:
+                st.download_button('Download descriptions CSV', fh.read(), file_name=out_path.name, mime='text/csv')
+        else:
+            st.warning("Edition 2 extraction did not produce an output CSV. Check logs above.")
+
+st.markdown("---")
+
 # --- Clean extracted contacts form ---
 with st.form(key="yt_clean_form"):
     clean_input_upload = st.file_uploader("Extracted contacts CSV to clean", type=["csv"]) 
@@ -217,5 +291,204 @@ if run_clean:
                 st.info("Dry-run completed. No output written.")
             else:
                 st.warning("Cleaner did not produce an output CSV. Check logs above.")
+
+st.markdown("---")
+
+# --- Extract links (all) form ---
+with st.form(key="yt_extract_links_all_form"):
+    links_input_upload = st.file_uploader("CSV to scan for links (discover/contacts CSV)", type=["csv"]) 
+    links_input_path = st.text_input("Or existing CSV path (repo-relative)", value="")
+    links_output = st.text_input("Extracted links output CSV path (repo-relative)", value=os.path.join(OUT_DIR, f"extracted_links_{int(time.time())}.csv"))
+    run_links_extract = st.form_submit_button("Run link extractor")
+
+if run_links_extract:
+    tmpdir = Path(tempfile.mkdtemp(prefix="yt_links_"))
+    candidate = None
+    if links_input_upload is not None:
+        candidate = tmpdir / f"uploaded_links_in_{int(time.time())}.csv"
+        with open(candidate, 'wb') as f:
+            f.write(links_input_upload.getbuffer())
+    else:
+        p = Path(links_input_path)
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        if p.exists():
+            candidate = p
+    if not candidate or not Path(candidate).exists():
+        st.error("Input CSV not provided or not found")
+    else:
+        out_path = Path(links_output)
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        cmd = ["python", "-m", "python_src.yt.extract_links_all", "--input", str(candidate), "--output", str(out_path)]
+
+        st.info("Running: " + " ".join(cmd))
+        log_box = st.empty()
+        log_lines = []
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        try:
+            while True:
+                line = proc.stdout.readline()
+                if line == '' and proc.poll() is not None:
+                    break
+                if line:
+                    log_lines.append(line.rstrip())
+                    if len(log_lines) > 2000:
+                        log_lines = log_lines[-2000:]
+                    log_box.text_area("logs", value="\n".join(log_lines), height=300)
+            proc.wait()
+        except Exception as e:
+            st.error(f"Error while running link extractor: {e}")
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+        if out_path.exists():
+            st.success(f"Link extraction finished — output: {out_path}")
+            with open(out_path, 'rb') as fh:
+                st.download_button('Download extracted links CSV', fh.read(), file_name=out_path.name, mime='text/csv')
+        else:
+            st.warning("Link extractor did not produce an output CSV. Check logs above.")
+
+st.markdown("---")
+
+# --- Uniformize links form ---
+with st.form(key="yt_uniformize_links_form"):
+    uniform_input_upload = st.file_uploader("Extracted links CSV to uniformize", type=["csv"]) 
+    uniform_input_path = st.text_input("Or existing extracted links CSV path (repo-relative)", value="")
+    uniform_output = st.text_input("Uniformized output CSV path (repo-relative)", value=os.path.join(OUT_DIR, f"uniform_links_{int(time.time())}.csv"))
+    run_uniformize = st.form_submit_button("Run uniformizer")
+
+if run_uniformize:
+    tmpdir = Path(tempfile.mkdtemp(prefix="yt_uniform_"))
+    candidate = None
+    if uniform_input_upload is not None:
+        candidate = tmpdir / f"uploaded_uniform_in_{int(time.time())}.csv"
+        with open(candidate, 'wb') as f:
+            f.write(uniform_input_upload.getbuffer())
+    else:
+        p = Path(uniform_input_path)
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        if p.exists():
+            candidate = p
+    if not candidate or not Path(candidate).exists():
+        st.error("Input extracted links CSV not provided or not found")
+    else:
+        out_path = Path(uniform_output)
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        cmd = ["python", "-m", "python_src.yt.uniformize_links", "--input", str(candidate), "--output", str(out_path)]
+
+        st.info("Running: " + " ".join(cmd))
+        log_box = st.empty()
+        log_lines = []
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        try:
+            while True:
+                line = proc.stdout.readline()
+                if line == '' and proc.poll() is not None:
+                    break
+                if line:
+                    log_lines.append(line.rstrip())
+                    if len(log_lines) > 2000:
+                        log_lines = log_lines[-2000:]
+                    log_box.text_area("logs", value="\n".join(log_lines), height=300)
+            proc.wait()
+        except Exception as e:
+            st.error(f"Error while running uniformizer: {e}")
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+        if out_path.exists():
+            st.success(f"Uniformizer finished — output: {out_path}")
+            with open(out_path, 'rb') as fh:
+                st.download_button('Download uniform links CSV', fh.read(), file_name=out_path.name, mime='text/csv')
+        else:
+            st.warning("Uniformizer did not produce an output CSV. Check logs above.")
+
+st.markdown("---")
+
+# --- Pivot links to columns form ---
+with st.form(key="yt_pivot_links_form"):
+    pivot_rows_upload = st.file_uploader("Original rows CSV (discover/contacts CSV)", type=["csv"]) 
+    pivot_rows_path = st.text_input("Or existing original CSV path (repo-relative)", value="")
+    pivot_uniform_upload = st.file_uploader("Uniformized links CSV", type=["csv"]) 
+    pivot_uniform_path = st.text_input("Or existing uniformized CSV path (repo-relative)", value="")
+    pivot_output = st.text_input("Pivoted output CSV path (repo-relative)", value=os.path.join(OUT_DIR, f"yt_contacts_pivot_{int(time.time())}.csv"))
+    run_pivot = st.form_submit_button("Run pivot")
+
+if run_pivot:
+    tmpdir = Path(tempfile.mkdtemp(prefix="yt_pivot_"))
+    rows_candidate = None
+    uniform_candidate = None
+    if pivot_rows_upload is not None:
+        rows_candidate = tmpdir / f"uploaded_rows_in_{int(time.time())}.csv"
+        with open(rows_candidate, 'wb') as f:
+            f.write(pivot_rows_upload.getbuffer())
+    else:
+        p = Path(pivot_rows_path)
+        if not p.is_absolute():
+            p = Path.cwd() / p
+        if p.exists():
+            rows_candidate = p
+    if pivot_uniform_upload is not None:
+        uniform_candidate = tmpdir / f"uploaded_uniform_in_{int(time.time())}.csv"
+        with open(uniform_candidate, 'wb') as f:
+            f.write(pivot_uniform_upload.getbuffer())
+    else:
+        q = Path(pivot_uniform_path)
+        if not q.is_absolute():
+            q = Path.cwd() / q
+        if q.exists():
+            uniform_candidate = q
+
+    if not rows_candidate or not Path(rows_candidate).exists():
+        st.error("Original rows CSV not provided or not found")
+    elif not uniform_candidate or not Path(uniform_candidate).exists():
+        st.error("Uniformized links CSV not provided or not found")
+    else:
+        out_path = Path(pivot_output)
+        try:
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+        cmd = ["python", "-m", "python_src.yt.pivot_links_to_columns", "--rows", str(rows_candidate), "--uniform", str(uniform_candidate), "--output", str(out_path)]
+
+        st.info("Running: " + " ".join(cmd))
+        log_box = st.empty()
+        log_lines = []
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1)
+        try:
+            while True:
+                line = proc.stdout.readline()
+                if line == '' and proc.poll() is not None:
+                    break
+                if line:
+                    log_lines.append(line.rstrip())
+                    if len(log_lines) > 2000:
+                        log_lines = log_lines[-2000:]
+                    log_box.text_area("logs", value="\n".join(log_lines), height=300)
+            proc.wait()
+        except Exception as e:
+            st.error(f"Error while running pivot: {e}")
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+
+        if out_path.exists():
+            st.success(f"Pivot finished — output: {out_path}")
+            with open(out_path, 'rb') as fh:
+                st.download_button('Download pivoted contacts CSV', fh.read(), file_name=out_path.name, mime='text/csv')
+        else:
+            st.warning("Pivot did not produce an output CSV. Check logs above.")
 
 st.markdown("\n---\nYou can run this UI directly with:\n\n    streamlit run python_src/yt/app.py\n\nOr from repository root with: python run_yt.py")

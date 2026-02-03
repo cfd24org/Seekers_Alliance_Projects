@@ -29,7 +29,7 @@ except Exception:
 
 SOCIAL_DOMAINS = [
     'twitter.com', 'x.com', 'instagram.com', 'twitch.tv', 'discord.gg', 'discord.com',
-    'patreon.com', 'linkedin.com', 'facebook.com', 't.me'
+    'patreon.com', 'linkedin.com', 'facebook.com', 't.me', 'youtube.com'
 ]
 # map domains to clean column keys (avoid using split('.')[0] which is brittle)
 DOMAIN_KEY_MAP = {
@@ -43,6 +43,7 @@ DOMAIN_KEY_MAP = {
     'linkedin.com': 'linkedin',
     'facebook.com': 'facebook',
     't.me': 't_me',
+    'youtube.com': 'youtube',
 }
 
 URL_RE = re.compile(r"https?://[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]+")
@@ -188,6 +189,9 @@ def normalize_url(base, href):
         return 'https:' + href
     if href.startswith('/'):
         return urljoin(base, href)
+    # If it looks like a bare domain or domain/path (e.g. "twitch.tv/foo"), make it absolute
+    if re.match(r'^[A-Za-z0-9.-]+\.[A-Za-z]{2,}(/.*)?$', href):
+        return 'https://' + href
     if href.startswith('http'):
         return href
     return urljoin(base, href)
@@ -282,6 +286,25 @@ def extract_contacts_from_channel(channel_url, page, debug_dir=None, idx=None):
         except Exception:
             channel_name = channel_name
 
+        # Extract the channel description
+        description = ''
+        try:
+            # Check if "Read more" button exists and click it
+            _expand_truncated_description(page)
+
+            # Locate the description container using the full path
+            desc_container = page.query_selector(
+                'html > body > ytd-app > ytd-popup-container.style-scope.ytd-app > tp-yt-paper-dialog.style-scope.ytd-popup-container > ytd-engagement-panel-section-list-renderer.style-scope.ytd-popup-container > div#content > ytd-section-list-renderer.style-scope.ytd-engagement-panel-section-list-renderer > div#contents > ytd-item-section-renderer.style-scope.ytd-section-list-renderer > div#contents > ytd-about-channel-renderer.style-scope.ytd-item-section-renderer > div#about-container > yt-attributed-string#description-container > span.yt-core-attributed-string.yt-core-attributed-string--white-space-pre-wrap'
+            )
+            if desc_container:
+                description = desc_container.inner_text() or ''
+        except Exception:
+            description = ''
+
+        # Add the description to the found dictionary
+        if description:
+            found['description'] = description
+
         # Extract header preview text (quick win) before attempting About navigation
         header_text = ''
         try:
@@ -317,51 +340,10 @@ def extract_contacts_from_channel(channel_url, page, debug_dir=None, idx=None):
         except Exception:
             header_text = ''
 
-        # Parse header text for links/emails
-        # But first try clicking the header "more" button (the small blurb under the channel name)
-        try:
-            header_more = page.query_selector('button.yt-truncated-text__absolute-button, button.yt-truncated-text__more-button')
-            if header_more:
-                try:
-                    header_more.scroll_into_view_if_needed()
-                except Exception:
-                    pass
-                try:
-                    header_more.click(force=True)
-                    page.wait_for_timeout(700)
-                    # wait briefly for the dialog/panel or about renderer to appear
-                    try:
-                        page.wait_for_selector('ytd-popup-container tp-yt-paper-dialog ytd-engagement-panel-section-list-renderer, ytd-about-channel-renderer #about-container', timeout=2000)
-                    except Exception:
-                        pass
-                    # save snapshot for debugging if requested
-                    if debug_dir and idx is not None:
-                        try:
-                            html = page.content()
-                            with open(f"{debug_dir}/about_dialog_snapshot_{idx}.html", 'w', encoding='utf-8') as f:
-                                f.write(html)
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        if header_text:
-            u_hdr, e_hdr = extract_links_and_emails(header_text)
-            for uu in u_hdr:
-                dom = domain_of(uu)
-                matched = False
-                for sd in SOCIAL_DOMAINS:
-                    if sd in dom:
-                        key = DOMAIN_KEY_MAP.get(sd, sd.split('.')[0])
-                        found.setdefault(key, []).append(uu)
-                        matched = True
-                        break
-                if not matched:
-                    found.setdefault('website', []).append(uu)
-            for ee in e_hdr:
-                found.setdefault('email', []).append(ee)
+        # NOTE: Skip parsing header preview text for links/emails. This often picks up unrelated
+        # links (thumbnails, suggested channels, etc). We only want links from the About
+        # renderer's explicit link list and emails in the channel description (about_text).
+        # ...header preview parsing intentionally omitted...
 
         # Try to click an in-page About tab safely (prefer tab selectors)
         clicked_about = False
@@ -468,10 +450,10 @@ def extract_contacts_from_channel(channel_url, page, debug_dir=None, idx=None):
             if not about_node:
                 try:
                     dialog = page.query_selector('tp-yt-paper-dialog')
-                    if dialog:
+                    if (dialog):
                         try:
                             inner = dialog.query_selector('#about-container')
-                            if inner:
+                            if (inner):
                                 about_node = inner
                         except Exception:
                             pass
@@ -493,87 +475,177 @@ def extract_contacts_from_channel(channel_url, page, debug_dir=None, idx=None):
                 except Exception:
                     anchors = []
             else:
-                # fallback: search for link-list on whole page
-                try:
-                    anchors = page.query_selector_all('#link-list-container a, #links-section a, ytd-channel-external-link-renderer a, a[href^="http"]')
-                except Exception:
-                    anchors = []
-        except Exception:
-            about_text = ''
-            anchors = []
+                # If no About renderer is present, do not fall back to scanning the whole page
+                # for anchors — that picks up unrelated links. Keep anchors empty.
+                anchors = []
 
-        # If we didn't find anchors earlier, try to search page-wide anchors now
-        try:
             # collect hrefs from anchors found
             hrefs = []
+            def canonical_same(a,b):
+                try:
+                    if not a or not b:
+                        return False
+                    pa = urlparse(a)
+                    pb = urlparse(b)
+                    na = (pa.netloc or '') + (pa.path or '')
+                    nb = (pb.netloc or '') + (pb.path or '')
+                    # strip trailing slashes and common www prefixes
+                    for s in ('www.', 'm.'):
+                        na = na.replace(s, '')
+                        nb = nb.replace(s, '')
+                    na = na.rstrip('/')
+                    nb = nb.rstrip('/')
+                    return na.lower() == nb.lower()
+                except Exception:
+                    return False
+
             for a in anchors:
                 try:
                     h = a.get_attribute('href') or ''
-                    if h:
-                        h = normalize_url('https://www.youtube.com', h)
-                        h = unwrap_youtube_redirect(h)
-                        hrefs.append(h)
+                    if not h:
+                        continue
+                    h = normalize_url('https://www.youtube.com', h)
+                    # unwrap YouTube redirect if present
+                    h = unwrap_youtube_redirect(h)
+
+                    # Unwrap Google sign-in continuations that point to YouTube (common localized links)
+                    try:
+                        if 'accounts.google.com' in h:
+                            parsed = urlparse(h)
+                            q = parse_qs(parsed.query)
+                            cont = q.get('continue') or q.get('next') or q.get('q')
+                            if cont:
+                                cand = unquote(cont[0])
+                                if 'youtube.com' in cand:
+                                    h = cand
+                    except Exception:
+                        pass
+
+                    # normalize youtube handle links (e.g. youtube.com/@handle) to a consistent http(s) form
+                    if h.startswith('youtube.com'):
+                        h = 'https://' + h
+
+                    # Skip if this is basically the same as the provided channel_url to avoid duplicates
+                    try:
+                        if channel_url and canonical_same(h, channel_url):
+                            continue
+                    except Exception:
+                        pass
+
+                    hrefs.append(h)
                 except Exception:
                     continue
-            # also mailto anchors
+
+            # Collect explicit link-section anchors only. Do NOT classify into social/website/email here.
+            # We skip mailto links entirely (email extraction is handled by a downstream script).
             try:
-                mail_nodes = page.query_selector_all('a[href^="mailto:"]')
-                for m in mail_nodes:
-                    try:
-                        h2 = m.get_attribute('href') or ''
-                        if h2:
-                            hrefs.append(h2)
-                    except Exception:
+                uniq = list(dict.fromkeys(hrefs))
+                for u in uniq:
+                    if not u:
                         continue
+                    if u.lower().startswith('mailto:'):
+                        # skip mailto here
+                        continue
+                    found.setdefault('links', []).append(u)
             except Exception:
                 pass
-
-            # add hrefs to found categorized by domain
-            for u in list(dict.fromkeys(hrefs)):
-                if not u:
-                    continue
-                if u.lower().startswith('mailto:'):
-                    email = u.split('mailto:')[-1]
-                    if email:
-                        found.setdefault('email', []).append(email)
-                    continue
-                dom = domain_of(u)
-                matched = False
-                for sd in SOCIAL_DOMAINS:
-                    if sd in dom:
-                        key = DOMAIN_KEY_MAP.get(sd, sd.split('.')[0])
-                        found.setdefault(key, []).append(u)
-                        matched = True
-                        break
-                if not matched:
-                    found.setdefault('website', []).append(u)
         except Exception:
             pass
 
-        # parse about_text for inline links/emails
+        # NOTE: Removed last-resort raw HTML scanning. Scanning full page HTML or fallback
+        # about-container content tends to collect many unrelated links. We only extract
+        # from the explicit About link list (as 'links') and the channel description (about_text).
+
+        # Attempt to extract specific fields from the About renderer: description span text, country, subscribers
+        try:
+            if about_node:
+                # Prefer the inner span inside the description container which preserves whitespace/newlines
+                try:
+                    span = about_node.query_selector('yt-attributed-string#description-container span.yt-core-attributed-string, yt-attributed-string#description-container span')
+                    desc_span = ''
+                    if span:
+                        desc_span = (span.inner_text() or '').strip()
+                    else:
+                        desc_span = about_text.strip() if about_text else ''
+                    if desc_span:
+                        found.setdefault('description', []).append(desc_span)
+                except Exception:
+                    pass
+
+                # Country: look for the row that contains the privacy_public icon and take the second cell
+                try:
+                    country = about_node.evaluate("""(node)=> {
+                        const rows = node.querySelectorAll('#additional-info-container tr');
+                        for (const r of rows) {
+                            try {
+                                if ((r.innerHTML||'').includes('privacy_public')) {
+                                    const tds = r.querySelectorAll('td');
+                                    if (tds.length>1) return (tds[1].innerText||'').trim();
+                                }
+                            } catch(e) { continue; }
+                        }
+                        return null;
+                    }""")
+                    if country:
+                        found.setdefault('country', []).append(country)
+                except Exception:
+                    pass
+
+                # Subscribers: find any table cell mentioning "subscribers" and return the sibling cell (the count)
+                try:
+                    subs = about_node.evaluate("""(node)=> {
+                        const rows = node.querySelectorAll('#additional-info-container tr');
+                        for (const r of rows) {
+                            try {
+                                const tds = r.querySelectorAll('td');
+                                for (const td of tds) {
+                                    const txt = (td.innerText||'').toLowerCase();
+                                    if (txt.includes('subscribers')) {
+                                        if (tds.length>1) return (tds[1].innerText||'').trim();
+                                        return txt;
+                                    }
+                                }
+                            } catch(e) { continue; }
+                        }
+                        return null;
+                    }""")
+                    if subs:
+                        m = re.search(r'([\d\.,]+\s*(?:[MKmk])?)', subs)
+                        val = m.group(1).strip() if m else subs
+                        if val:
+                            found.setdefault('subscribers', []).append(val)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # Ensure we capture the raw description text so the downstream link/email normalizer
+        # can parse it. Do not attempt to extract links/emails here.
         try:
             if not about_text:
-                # try to read some meta-desc fallback
                 try:
                     meta_desc = page.query_selector('meta[name="description"]')
                     if meta_desc:
                         about_text = meta_desc.get_attribute('content') or ''
                 except Exception:
                     about_text = about_text
-            urls, emails = extract_links_and_emails(about_text)
-            for u in urls:
-                dom = domain_of(u)
-                matched = False
-                for sd in SOCIAL_DOMAINS:
-                    if sd in dom:
-                        key = DOMAIN_KEY_MAP.get(sd, sd.split('.')[0])
-                        found.setdefault(key, []).append(u)
-                        matched = True
-                        break
-                if not matched:
-                    found.setdefault('website', []).append(u)
-            for e in emails:
-                found.setdefault('email', []).append(e)
+            if about_text and not found.get('description'):
+                try:
+                    txt = about_text.strip()
+                    if txt:
+                        found.setdefault('description', []).append(txt)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # dedupe found lists before returning
+        try:
+            for k in list(found.keys()):
+                try:
+                    found[k] = list(dict.fromkeys(found.get(k) or []))
+                except Exception:
+                    continue
         except Exception:
             pass
 
@@ -695,46 +767,23 @@ def main():
         except Exception:
             pass
 
-    # Flatten results and build CSV fieldnames: preserve input columns, add channel_name_extracted, per-service columns, website_1..N and email_1..N
+    # Flatten results and build CSV fieldnames: preserve input columns, add channel_name_extracted,
+    # and explicit columns we want from this extractor: description, links, country, subscribers.
     if raw_out_rows:
         input_cols = list(rows[0].keys())
-        service_keys = list(dict.fromkeys(DOMAIN_KEY_MAP.values()))  # preserve order
-        # ensure 'discord' not duplicated and other services appear
-        # collect max website/email counts
-        max_web = 0
-        max_em = 0
-        for r in raw_out_rows:
-            f = r.get('found', {}) or {}
-            w = len(f.get('website', []))
-            e = len(f.get('email', []))
-            max_web = max(max_web, w)
-            max_em = max(max_em, e)
-            # also ensure services present in found are counted
-            for k in f.keys():
-                if k not in service_keys and k not in ('website', 'email'):
-                    service_keys.append(k)
-        # build final fieldnames
-        fieldnames = input_cols + ['channel_name_extracted'] + service_keys
-        for i in range(1, max_web + 1):
-            fieldnames.append(f'website_{i}')
-        for i in range(1, max_em + 1):
-            fieldnames.append(f'email_{i}')
+        fieldnames = input_cols + ['channel_name_extracted', 'description', 'links', 'country', 'subscribers']
 
         final_rows = []
         for r in raw_out_rows:
             base = {k: r.get(k, '') for k in input_cols}
             base['channel_name_extracted'] = r.get('channel_name_extracted', '')
             f = r.get('found', {}) or {}
-            # populate service columns with pipe-joined values
-            for sk in service_keys:
-                base[sk] = '|'.join(f.get(sk, [])) if f.get(sk) else ''
-            # fill website_N and email_N
-            websites = f.get('website', [])
-            emails = f.get('email', [])
-            for i in range(1, max_web + 1):
-                base[f'website_{i}'] = websites[i-1] if i-1 < len(websites) else ''
-            for i in range(1, max_em + 1):
-                base[f'email_{i}'] = emails[i-1] if i-1 < len(emails) else ''
+            # description: join multiple description entries with '\n\n'
+            base['description'] = '\n\n'.join(f.get('description', [])) if f.get('description') else ''
+            # links: pipe-joined explicit link-section anchors (downstream script will normalize)
+            base['links'] = '|'.join(f.get('links', [])) if f.get('links') else ''
+            base['country'] = '|'.join(f.get('country', [])) if f.get('country') else ''
+            base['subscribers'] = '|'.join(f.get('subscribers', [])) if f.get('subscribers') else ''
             final_rows.append(base)
 
         with open(args.output, 'w', newline='', encoding='utf-8') as fh:
