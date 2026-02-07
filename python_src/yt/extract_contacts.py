@@ -21,10 +21,18 @@ from urllib.parse import urlparse, urljoin, parse_qs, unquote
 from datetime import datetime
 from playwright.sync_api import sync_playwright
 
+import os
 try:
     from python_src.shared import csv_helpers
 except Exception:
-    import csv_helpers
+    import sys
+    repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    if repo_root not in sys.path:
+        sys.path.insert(0, repo_root)
+    try:
+        from python_src.shared import csv_helpers
+    except Exception:
+        import csv_helpers
 
 URL_RE = re.compile(r"https?://[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]+")
 EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -142,7 +150,7 @@ def _expand_truncated_description(page):
                 const matchers = ['show more','see more','read more','more','tap for more'];
                 const nodes = Array.from(document.querySelectorAll('button, a, tp-yt-paper-button'));
                 for (const n of nodes) {
-                    try {
+                    try:
                         const t = (n.innerText || '').toLowerCase();
                         for (const m of matchers) {
                             if (t.includes(m)) { n.click(); return true; }
@@ -202,106 +210,131 @@ def extract_description_from_channel(channel_url, page, debug_dir=None, idx=None
         except Exception:
             channel_name = ''
 
-        # Try to click an in-page About tab safely (prefer tab selectors)
-        clicked_about = False
+        # Try to extract description from the channel header (expand truncated first)
         try:
-            about_selectors = [
-                'tp-yt-paper-tab:has-text("About")',
-                'tp-yt-paper-tab:has-text("ABOUT")',
-                'ytd-c4-tabbed-header-renderer tp-yt-paper-tab:has-text("About")',
-                'a[href*="/about"]',
-            ]
-            for sel in about_selectors:
-                try:
-                    el = page.query_selector(sel)
-                    if not el:
-                        continue
-                    # Avoid clicking elements that are inside a featured-video/player container
+            desc_preview = page.query_selector('yt-description-preview-view-model')
+            if desc_preview:
+                desc_preview.scroll_into_view_if_needed()
+                page.wait_for_timeout(500)
+            _expand_truncated_description(page)
+            page.wait_for_timeout(2000)
+            desc_element = page.query_selector('yt-description-preview-view-model yt-attributed-string span.yt-core-attributed-string')
+            if desc_element:
+                description = desc_element.text_content() or ''
+                if debug_dir:
                     try:
-                        safe = page.evaluate(r"""(el) => {
-                            try {
-                                const bad = el.closest('ytd-channel-video-player-renderer, ytd-channel-video-player, #player, .html5-video-player, ytd-channel-video-player-renderer');
-                                return !bad;
-                            } catch(e) { return true; }
-                        }""", el)
-                    except Exception:
-                        safe = True
-                    if not safe:
-                        continue
-
-                    # ensure element visible and attempt click
-                    try:
-                        el.scroll_into_view_if_needed()
-                    except Exception:
+                        with open(f"{debug_dir}/desc_debug_{idx}.txt", 'w', encoding='utf-8') as f:
+                            f.write(f"Description: {description}\n")
+                            f.write(f"Element HTML: {desc_element.evaluate('el => el.outerHTML')}\n")
+                            f.write(f"Text content: {desc_element.text_content()}\n")
+                            f.write(f"Inner text: {desc_element.inner_text()}\n")
+                    except Exception as e:
                         pass
-                    try:
-                        el.click(force=True)
-                        page.wait_for_timeout(800)
-                        clicked_about = True
-                        break
-                    except Exception:
-                        continue
-                except Exception:
-                    continue
         except Exception:
-            clicked_about = False
+            description = ''
 
-        # If About didn't appear by tabs, try to open the engagement panel About renderer (some channels pop a panel)
-        if not clicked_about:
+        # If no description from header, try to click About and extract from there
+        if not description:
+            # Try to click an in-page About tab safely (prefer tab selectors)
+            clicked_about = False
             try:
-                # there may be an engagement-panel or about button we can click without hitting video thumbnails
-                panel_btn = page.query_selector('a[href*="/channel/"][href*="/about"], a[href$="/about"]')
-                if panel_btn:
+                about_selectors = [
+                    'tp-yt-paper-tab:has-text("About")',
+                    'tp-yt-paper-tab:has-text("ABOUT")',
+                    'ytd-c4-tabbed-header-renderer tp-yt-paper-tab:has-text("About")',
+                    'a[href*="/about"]',
+                ]
+                for sel in about_selectors:
                     try:
-                        # safety check for panel button as well
+                        el = page.query_selector(sel)
+                        if not el:
+                            continue
+                        # Avoid clicking elements that are inside a featured-video/player container
                         try:
-                            safe_panel = page.evaluate(r"""(el) => {
+                            safe = page.evaluate(r"""(el) => {
                                 try {
-                                    const bad = el.closest('ytd-channel-video-player-renderer, ytd-channel-video-player, #player, .html5-video-player');
+                                    const bad = el.closest('ytd-channel-video-player-renderer, ytd-channel-video-player, #player, .html5-video-player, ytd-channel-video-player-renderer');
                                     return !bad;
                                 } catch(e) { return true; }
-                            }""", panel_btn)
+                            }""", el)
                         except Exception:
-                            safe_panel = True
-                        if not safe_panel:
-                            clicked_about = False
-                        else:
-                            try:
-                                panel_btn.scroll_into_view_if_needed()
-                            except Exception:
-                                pass
-                            try:
-                                panel_btn.click(force=True)
-                                page.wait_for_timeout(800)
-                                clicked_about = True
-                            except Exception:
-                                clicked_about = False
+                            safe = True
+                        if not safe:
+                            continue
+
+                        # ensure element visible and attempt click
+                        try:
+                            el.scroll_into_view_if_needed()
+                        except Exception:
+                            pass
+                        try:
+                            el.click(force=True)
+                            page.wait_for_timeout(800)
+                            clicked_about = True
+                            break
+                        except Exception:
+                            continue
                     except Exception:
-                        clicked_about = False
+                        continue
             except Exception:
                 clicked_about = False
 
-        # Extract the channel description using the full path
-        if clicked_about:
-            try:
-                # Check if "Read more" button exists and click it
-                _expand_truncated_description(page)
+            # If About didn't appear by tabs, try to open the engagement panel About renderer (some channels pop a panel)
+            if not clicked_about:
+                try:
+                    # there may be an engagement-panel or about button we can click without hitting video thumbnails
+                    panel_btn = page.query_selector('a[href*="/channel/"][href*="/about"], a[href$="/about"]')
+                    if panel_btn:
+                        try:
+                            # safety check for panel button as well
+                            try:
+                                safe_panel = page.evaluate(r"""(el) => {
+                                    try {
+                                        const bad = el.closest('ytd-channel-video-player-renderer, ytd-channel-video-player, #player, .html5-video-player');
+                                        return !bad;
+                                    } catch(e) { return true; }
+                                }""", panel_btn)
+                            except Exception:
+                                safe_panel = True
+                            if not safe_panel:
+                                clicked_about = False
+                            else:
+                                try:
+                                    panel_btn.scroll_into_view_if_needed()
+                                except Exception:
+                                    pass
+                                try:
+                                    panel_btn.click(force=True)
+                                    page.wait_for_timeout(800)
+                                    clicked_about = True
+                                except Exception:
+                                    clicked_about = False
+                        except Exception:
+                            clicked_about = False
+                except Exception:
+                    clicked_about = False
 
-                # Locate the about-container first
-                about_container = page.query_selector('ytd-about-channel-renderer #about-container')
-                if about_container:
-                    # Then find the description container inside it
-                    desc_element = about_container.query_selector('yt-attributed-string#description-container')
-                    if desc_element:
-                        # Get the span inside it
-                        span = desc_element.query_selector('span.yt-core-attributed-string')
-                        if span:
-                            description = span.inner_text() or ''
-                        else:
-                            # Fallback to the element's inner_text
-                            description = desc_element.inner_text() or ''
-            except Exception:
-                description = ''
+            # Extract the channel description from About panel
+            if clicked_about:
+                try:
+                    page.wait_for_timeout(1000)
+                    # Locate the about-container first
+                    about_container = page.query_selector('tp-yt-paper-dialog ytd-about-channel-renderer #about-container')
+                    if about_container:
+                        # Then find the description container inside it
+                        desc_element = about_container.query_selector('yt-attributed-string#description-container')
+                        if desc_element:
+                            # Check if "Read more" button exists and click it
+                            _expand_truncated_description(page)
+                            # Get the span inside it
+                            span = desc_element.query_selector('span.yt-core-attributed-string')
+                            if span:
+                                description = span.inner_text() or ''
+                            else:
+                                # Fallback to the element's inner_text
+                                description = desc_element.inner_text() or ''
+                except Exception:
+                    description = ''
 
         # Close any dialog/panel we opened to return DOM to stable state
         try:
