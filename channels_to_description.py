@@ -123,7 +123,7 @@ def extract_description(channel_url, page):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--input', required=True, help='Input CSV file')
-    parser.add_argument('--output', required=True, help='Output CSV file')
+    parser.add_argument('--output', required=False, default='outputs/channels_with_descriptions.csv', help='Output CSV file')
     parser.add_argument('--no-headless', action='store_true', help='Run in non-headless mode')
     args = parser.parse_args()
 

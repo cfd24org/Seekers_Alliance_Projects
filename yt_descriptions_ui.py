@@ -61,7 +61,7 @@ with tab2:
                     input_path = tmp_in.name
                 
                 # Output path
-                output_path = input_path.replace('.csv', '_with_descriptions.csv')
+                output_path = os.path.join('outputs', 'channels_with_descriptions.csv')
                 
                 # Run the script
                 cmd = [sys.executable, EXTRACT_SCRIPT, '--input', input_path, '--output', output_path]
