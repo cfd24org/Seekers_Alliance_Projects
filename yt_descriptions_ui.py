@@ -20,11 +20,14 @@ with tab1:
     
     query = st.text_input("Search Query", value="minecraft")
     max_channels = st.slider("Max Channels", min_value=1, max_value=50, value=20)
+    collect_videos = st.checkbox("Collect Videos", value=False)
     output_path = st.text_input("Output CSV Path", value="outputs/yt_discover.csv")
     
     if st.button("Discover Channels"):
         with st.spinner("Discovering..."):
             cmd = [sys.executable, DISCOVER_SCRIPT, '--query', query, '--max-channels', str(max_channels), '--output', output_path]
+            if collect_videos:
+                cmd.append('--collect-videos')
             result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.path.dirname(__file__))
             
             if result.returncode == 0:
