@@ -4,9 +4,9 @@ channels_to_description.py
 Script to add channel descriptions to a CSV of YouTube channels.
 
 Input CSV columns: video_url, video_title, channel_url, channel_name
-Output CSV adds: channel_description
+Output CSV adds: channel_description, channel_emails
 
-Uses Playwright to visit each channel_url, click to open the About popup, and extract the description.
+Uses Playwright to visit each channel_url, click to open the About popup, and extract the information.
 """
 
 import csv
@@ -14,8 +14,16 @@ import argparse
 import os
 from urllib.parse import urljoin
 from playwright.sync_api import sync_playwright
+import re
 
 USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36'
+
+
+def extract_emails(text):
+    """Extract email addresses from text using regex."""
+    email_pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
+    emails = re.findall(email_pattern, text)
+    return list(set(emails))  # Remove duplicates
 
 
 def dismiss_youtube_consent(page, timeout=2000):
@@ -48,7 +56,7 @@ def dismiss_youtube_consent(page, timeout=2000):
                 const texts = ["reject all","reject","rechazar todo","no aceptar","no, thanks","reject all cookies"];
                 const nodes = Array.from(document.querySelectorAll('button, a, tp-yt-paper-button, ytd-button-renderer'));
                 for (const n of nodes) {
-                    try:
+                    try {
                         const t = (n.innerText || '').toLowerCase().trim();
                         for (const tt of texts) {
                             if (t === tt || t.includes(tt)) { n.click(); return true; }
@@ -85,22 +93,31 @@ def _expand_truncated_description(page):
 
 
 def extract_description(channel_url, page):
-    """Extract description from the About popup."""
-    description = ''
+    """Extract description and emails from the About popup."""
+    info = {
+        'channel_description': '',
+        'channel_emails': ''
+    }
     try:
         page.goto(channel_url, timeout=25000)
         page.wait_for_load_state('networkidle', timeout=10000)
         dismiss_youtube_consent(page)
         _expand_truncated_description(page)
+        
+        # Extract description
         desc_element = page.query_selector('tp-yt-paper-dialog yt-attributed-string#description-container span.yt-core-attributed-string')
         if desc_element:
-            description = desc_element.text_content().strip()
+            info['channel_description'] = desc_element.text_content().strip()
+            # Extract emails from description
+            emails = extract_emails(info['channel_description'])
+            info['channel_emails'] = ';'.join(emails)
+        
         # Close popup
         page.keyboard.press('Escape')
         page.wait_for_timeout(300)
     except Exception:
         pass
-    return description
+    return info
 
 
 def main():
@@ -122,13 +139,13 @@ def main():
             from io import StringIO
             data_io = StringIO(''.join(data_lines))
             reader = csv.DictReader(data_io)
-            writer = csv.DictWriter(outfile, fieldnames=reader.fieldnames + ['channel_description'])
+            writer = csv.DictWriter(outfile, fieldnames=reader.fieldnames + ['channel_description', 'channel_emails'])
             writer.writeheader()
 
             for row in reader:
                 channel_url = row['channel_url']
-                description = extract_description(channel_url, page)
-                row['channel_description'] = description
+                channel_info = extract_description(channel_url, page)
+                row.update(channel_info)
                 writer.writerow(row)
 
         context.close()
