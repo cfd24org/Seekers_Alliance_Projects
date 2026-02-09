@@ -66,8 +66,9 @@ with tab1:
                     st.error("Failed to load output CSV")
             else:
                 st.error("Error during discovery:")
-                st.text(result.stderr)
-                st.text(result.stdout)
+                st.text_area("Error Output", result.stderr, height=300)
+                if result.stdout:
+                    st.text_area("Standard Output", result.stdout, height=300)
 
 with tab2:
     st.header("Extract Channel Descriptions")
@@ -113,5 +114,6 @@ with tab2:
                         )
                 else:
                     st.error("Error during extraction:")
-                    st.text(result.stderr)
-                    st.text(result.stdout)
+                    st.text_area("Error Output", result.stderr, height=300)
+                    if result.stdout:
+                        st.text_area("Standard Output", result.stdout, height=300)
