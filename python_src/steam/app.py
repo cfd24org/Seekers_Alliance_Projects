@@ -23,6 +23,8 @@ from pathlib import Path
 from collections import deque
 import uuid
 
+st.set_page_config(page_title="Steam Curator Scraper UI", layout="centered")
+
 try:
     from python_src.shared import paths as shared_paths
 except Exception:
@@ -34,7 +36,17 @@ except Exception:
 
 OUT_DIR = shared_paths.OUTPUT_DIR
 
-st.set_page_config(page_title="Steam Curator Scraper UI", layout="centered")
+# Global headless toggle
+if 'headless' not in st.session_state:
+    st.session_state.headless = True
+
+col1, col2 = st.columns([1, 4])
+with col1:
+    if st.button("Toggle Headless Mode"):
+        st.session_state.headless = not st.session_state.headless
+with col2:
+    st.write(f"Headless Mode: {'ON' if st.session_state.headless else 'OFF (visible browser)'}")
+
 st.title("Steam Curator Scraper — GUI")
 
 st.markdown("Upload an existing CSV (optional) to update, then supply one or more Steam app IDs (one per line) or upload a games file.")
@@ -84,7 +96,7 @@ if run_filler_now:
     if input_csv_path:
         out_path = Path(str(input_csv_path).rsplit('.', 1)[0] + '_filled.csv')
         cmd_fill = ["python", "-m", "python_src.steam.fill_about_missing", "--input", str(input_csv_path), "--output", str(out_path), "--concurrency", str(max(1, filler_concurrency))]
-        if filler_no_headless:
+        if filler_no_headless or not st.session_state.headless:
             cmd_fill.append("--no-headless")
 
         st.info("Running filler: " + " ".join(cmd_fill))
@@ -215,7 +227,7 @@ if run_search:
         # prepare output path
         output_path = tmpdir_s / (search_output_name.strip() if search_output_name.strip() else "steam_games.csv")
         cmd = ["python", "-m", "python_src.steam.steam_search_scrape", "--queries-file", str(queries_path), "--output", str(output_path), "--pages", str(int(search_pages))]
-        if search_no_headless:
+        if search_no_headless or not st.session_state.headless:
             cmd.append("--no-headless")
         if search_debug_dir and search_debug_dir.strip():
             # ensure debug dir is an absolute path inside tmpdir if relative
@@ -273,7 +285,7 @@ if run_charts:
     # build command
     output_path = tmpdir_c / (charts_output_name.strip() if charts_output_name.strip() else "steam_charts.csv")
     cmd = ["python", "-m", "python_src.steam.steam_search_scrape", "--charts", "--charts-count", str(int(charts_count)), "--output", str(output_path)]
-    if charts_no_headless:
+    if charts_no_headless or not st.session_state.headless:
         cmd.append("--no-headless")
     # if user does not want slow detail visits, pass --no-details
     if not charts_include_details:
@@ -376,6 +388,8 @@ if run_btn:
             st.info(f"Scraper will write output to temporary file: {output_path.name}")
         if export_new_only:
             cmd += ["--export-new-only"]
+        if not st.session_state.headless:
+            cmd.append('--no-headless')
 
         st.write("Running:", " ".join(cmd))
 
@@ -433,7 +447,7 @@ if run_btn:
             if run_filler:
                 filled_path = candidate.with_name(candidate.stem + '_filled.csv')
                 cmd_fill = ["python", "-m", "python_src.steam.fill_about_missing", "--input", str(candidate), "--output", str(filled_path), "--concurrency", str(max(1, concurrency))]
-                if show_browser_for_filler:
+                if show_browser_for_filler or not st.session_state.headless:
                     cmd_fill.append("--no-headless")
 
                 st.info("Running filler: " + " ".join(cmd_fill))
