@@ -22,17 +22,19 @@ with tab1:
     max_channels = st.slider("Max Channels", min_value=1, max_value=1000, value=100)
     include_recent_date = st.checkbox("Include recent video date (~100 units/channel)", value=False)
     include_avg_views = st.checkbox("Include avg views last month (~200-500 units/channel)", value=False)
+    existing_csv = st.file_uploader("Existing Channels CSV (optional, to skip duplicates)", type=['csv'])
     output_path = st.text_input("Output CSV Path", value="outputs/yt_discover.csv")
     
     # Estimate costs
     num_queries = 11 if not query else 1  # Default queries count
-    base_cost = (max_channels // 50 + 1) * 100 * num_queries  # Search costs
+    search_requests_per_query = (max_channels + 49) // 50  # Ceil division for requests needed
+    base_cost = search_requests_per_query * 100 * num_queries  # Search costs
     channel_cost = max_channels * 1  # Channels list
     extra_cost = 0
     if include_recent_date:
-        extra_cost += max_channels * 100
+        extra_cost += max_channels * 100  # 1 search request per channel
     if include_avg_views:
-        extra_cost += max_channels * 300  # Estimate
+        extra_cost += max_channels * 300  # Estimate for multiple requests
     total_cost = base_cost + channel_cost + extra_cost
     
     st.write(f"Estimated API cost: {total_cost} units (Free tier: 10,000/day)")
@@ -46,6 +48,12 @@ with tab1:
                 cmd.append('--include-recent-date')
             if include_avg_views:
                 cmd.append('--include-avg-views')
+            if existing_csv:
+                # Save uploaded file to temp
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp_existing:
+                    tmp_existing.write(existing_csv.getvalue())
+                    existing_path = tmp_existing.name
+                cmd.extend(['--existing-csv', existing_path])
             result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.path.dirname(__file__))
             
             if result.returncode == 0:
