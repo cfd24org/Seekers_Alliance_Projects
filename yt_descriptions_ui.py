@@ -18,16 +18,34 @@ tab1, tab2 = st.tabs(["Discover Channels", "Extract Descriptions"])
 with tab1:
     st.header("Discover YouTube Channels")
     
-    query = st.text_input("Search Query", value="minecraft")
-    max_channels = st.slider("Max Channels", min_value=1, max_value=50, value=20)
-    collect_videos = st.checkbox("Collect Videos", value=False)
+    query = st.text_input("Search Query", value="", help="Leave blank to use default game-related queries")
+    max_channels = st.slider("Max Channels", min_value=1, max_value=1000, value=100)
+    include_recent_date = st.checkbox("Include recent video date (~100 units/channel)", value=False)
+    include_avg_views = st.checkbox("Include avg views last month (~200-500 units/channel)", value=False)
     output_path = st.text_input("Output CSV Path", value="outputs/yt_discover.csv")
+    
+    # Estimate costs
+    num_queries = 11 if not query else 1  # Default queries count
+    base_cost = (max_channels // 50 + 1) * 100 * num_queries  # Search costs
+    channel_cost = max_channels * 1  # Channels list
+    extra_cost = 0
+    if include_recent_date:
+        extra_cost += max_channels * 100
+    if include_avg_views:
+        extra_cost += max_channels * 300  # Estimate
+    total_cost = base_cost + channel_cost + extra_cost
+    
+    st.write(f"Estimated API cost: {total_cost} units (Free tier: 10,000/day)")
     
     if st.button("Discover Channels"):
         with st.spinner("Discovering..."):
-            cmd = [sys.executable, DISCOVER_SCRIPT, '--query', query, '--max-channels', str(max_channels), '--output', output_path]
-            if collect_videos:
-                cmd.append('--collect-videos')
+            cmd = [sys.executable, DISCOVER_SCRIPT, '--max-channels', str(max_channels), '--output', output_path]
+            if query:
+                cmd.extend(['--query', query])
+            if include_recent_date:
+                cmd.append('--include-recent-date')
+            if include_avg_views:
+                cmd.append('--include-avg-views')
             result = subprocess.run(cmd, capture_output=True, text=True, cwd=os.path.dirname(__file__))
             
             if result.returncode == 0:
