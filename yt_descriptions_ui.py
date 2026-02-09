@@ -6,7 +6,7 @@ import tempfile
 import pandas as pd
 
 # Path to the scripts
-DISCOVER_SCRIPT = os.path.join(os.path.dirname(__file__), 'python_src', 'yt', 'youtube_discover_and_extract.py')
+DISCOVER_SCRIPT = os.path.join(os.path.dirname(__file__), 'youtube_api_discovery', 'discover_channels_api.py')
 EXTRACT_SCRIPT = os.path.join(os.path.dirname(__file__), 'channels_to_description.py')
 
 st.title("YouTube Tools")
