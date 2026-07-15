@@ -29,7 +29,23 @@ It is designed to be run **locally** on your computer.
 
 ---
 
-## 🛠️ Local Installation & Setup
+## ⚡ Quick Start (one click)
+
+The easiest way to run the app — no terminal commands needed:
+
+1. Make sure Python 3 is installed ([python.org/downloads](https://www.python.org/downloads/); on Windows tick "Add Python to PATH").
+2. Download/clone this repository.
+3. Double-click the launcher for your system:
+   - **macOS**: `start_mac.command` (first time: right-click → Open, since it's from the internet)
+   - **Windows**: `start_windows.bat`
+
+The first run installs everything automatically (a few minutes); after that it starts in seconds and opens the app in your browser. Keep the launcher window open while using the app.
+
+Prefer to set things up manually? Follow the steps below.
+
+---
+
+## 🛠️ Manual Installation & Setup
 
 Ensure you have Python 3.8+ installed on your computer.
 

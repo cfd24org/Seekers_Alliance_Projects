@@ -9,8 +9,8 @@ A **locally-run** Steam curator scraper (Playwright browser automation) with a S
 ## Getting started (new owner)
 
 1. Clone this repo.
-2. Follow the "Local Installation & Setup" section in the README (Python venv, `pip install -r requirements.txt`, `playwright install chromium`).
-3. Launch the GUI with `python run_app.py` — everything can be driven from there, including downloading result CSVs.
+2. Double-click `start_mac.command` (macOS) or `start_windows.bat` (Windows) — the first run installs everything automatically, then the GUI opens in your browser. (Manual setup steps are in the README if you prefer.)
+3. Everything can be driven from the GUI, including downloading result CSVs.
 
 Results are plain CSV files saved to `outputs/` (gitignored) or downloaded via the GUI. There is no shared/live spreadsheet for this project — each run produces its own CSV, and you can feed a previous CSV back in for incremental updates.
 
