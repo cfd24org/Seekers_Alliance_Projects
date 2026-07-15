@@ -35,21 +35,20 @@ def extract_links(text):
     links = re.findall(url_pattern, text)
     return list(set(links))
 
-def discover_channels(output_file, max_total=1000, queries=None, include_recent_date=False, include_avg_views=False, existing_csv=None):
+def discover_channels(output_file, max_new=1000, queries=None, include_recent_date=False, include_avg_views=False, existing_csv=None):
     if queries is None:
         queries = QUERIES
     youtube = build('youtube', 'v3', developerKey=API_KEY)
     
-    # Load existing channels to merge
+    # Load existing channel IDs to skip duplicates
     channels = {}
     if existing_csv and os.path.exists(existing_csv):
         try:
             with open(existing_csv, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 for row in reader:
-                    channel_id = row.get('channel_id')
-                    if channel_id:
-                        channels[channel_id] = {
+                    if 'channel_id' in row:
+                        channels[row['channel_id']] = {
                             'channel_name': row.get('channel_name', ''),
                             'channel_url': row.get('channel_url', ''),
                             'channel_description': row.get('channel_description', ''),
@@ -62,7 +61,8 @@ def discover_channels(output_file, max_total=1000, queries=None, include_recent_
         except Exception as e:
             print(f"Error loading existing CSV: {e}")
     
-    total_channels = len(channels)  # Start with existing count
+    max_total = len(channels) + max_new  # Allow unlimited existing, add up to max_new new
+    total_channels = len(channels)
     
     # Collect new channels (skip if already in channels)
     for query in queries:
@@ -182,7 +182,7 @@ if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--query', help='Single query to search (optional, overrides default list)')
-    parser.add_argument('--max-channels', type=int, default=1000, help='Max total channels to collect')
+    parser.add_argument('--max-channels', type=int, default=1000, help='Max new channels to add')
     parser.add_argument('--output', default='outputs/discovered_channels.csv', help='Output CSV file')
     parser.add_argument('--include-recent-date', action='store_true', help='Include most recent video date (costs ~100 units per channel)')
     parser.add_argument('--include-avg-views', action='store_true', help='Include average views last month (costs ~100-500 units per channel)')

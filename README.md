@@ -4,6 +4,8 @@ This repository contains a set of Python scraping tools and a Streamlit web inte
 
 It is designed to be run **locally** on your computer.
 
+> **Taking over this project?** See [HANDOFF.md](HANDOFF.md). Note: the YouTube-related files in this repo are legacy prototypes — the maintained YouTube scraper lives in the separate [`yt_descriptions_app`](https://github.com/cfd24/yt_descriptions_app) repo.
+
 ---
 
 ## 🚀 Features
